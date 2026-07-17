@@ -17,7 +17,7 @@ def question_view_range(question: str) -> tuple[int, int] | None:
     return None
 
 
-def repair_highest_score_comment_text(
+def repair_ranged_rank_text_lookup(
     *,
     question: str,
     task_dir: Path | None,

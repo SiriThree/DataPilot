@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 
-PATIENT_SEX_RE = re.compile(
+ENTITY_POPULATION_RE = re.compile(
     r"(?:Patient|subject identified as|subject|record for Patient|file for Patient)\s+"
     r"(?P<id>\d{3,})[^.]{0,180}?\b(?P<sex>male|female)\b",
     re.IGNORECASE,
@@ -38,13 +38,13 @@ def _patient_population_ids(task_dir: Path, sex_value: str) -> set[str]:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for match in PATIENT_SEX_RE.finditer(text):
+        for match in ENTITY_POPULATION_RE.finditer(text):
             if match.group("sex").lower().startswith(sex_value.lower()[0]):
                 ids.add(match.group("id"))
     return ids
 
 
-def repair_patient_threshold_count(
+def repair_population_threshold_count(
     *,
     question: str,
     task_dir: Path | None,

@@ -74,7 +74,7 @@ def _find_race_record(task_dir: Path, question: str) -> dict | None:
     return None
 
 
-def repair_rank_finish_time(
+def repair_rank_attached_field(
     *,
     question: str,
     task_dir: Path | None,
@@ -212,7 +212,7 @@ def _constructor_reference_record(task_dir: Path, constructor_id: str) -> tuple[
     return None
 
 
-def repair_constructor_reference_website(
+def repair_reference_fields_from_ranked_entity(
     *,
     question: str,
     task_dir: Path | None,

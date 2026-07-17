@@ -6,7 +6,7 @@ from pathlib import Path
 from data_agent_baseline.tools.duckdb_sql import execute_data_sql
 
 
-def repair_school_riverside_sat_funding(
+def repair_joined_table_filter_projection(
     *,
     task_dir: Path | None,
     prediction_path: Path,

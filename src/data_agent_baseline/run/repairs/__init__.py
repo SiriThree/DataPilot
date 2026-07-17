@@ -1,1 +1,1 @@
-"""Deterministic repair helpers grouped by output/domain pattern."""
+"""Deterministic repair helpers grouped by output and reasoning patterns."""

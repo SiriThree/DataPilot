@@ -16,17 +16,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from data_agent_baseline.run.average_monthly_verifier import maybe_repair_average_monthly
-from data_agent_baseline.run.repairs.formula1 import (
-    repair_constructor_reference_website,
-    repair_rank_finish_time,
+from data_agent_baseline.run.repairs.filtered_join_aggregation import repair_filtered_join_average
+from data_agent_baseline.run.repairs.filtered_entity_count import (
+    repair_filtered_entity_count_from_related_records,
 )
-from data_agent_baseline.run.repairs.medical import repair_patient_threshold_count
+from data_agent_baseline.run.repairs.joined_table_filter import repair_joined_table_filter_projection
+from data_agent_baseline.run.repairs.rank_lookup import (
+    repair_rank_attached_field,
+    repair_reference_fields_from_ranked_entity,
+)
+from data_agent_baseline.run.repairs.ranged_rank_lookup import repair_ranged_rank_text_lookup
 from data_agent_baseline.run.repairs.output_shape import split_final_score_prediction
 from data_agent_baseline.run.repairs.scalar_format import strip_percent_symbol_prediction
-from data_agent_baseline.run.repairs.school import repair_school_riverside_sat_funding
-from data_agent_baseline.run.repairs.stackexchange import repair_highest_score_comment_text
-from data_agent_baseline.run.repairs.superhero import repair_average_female_superhero_weight
-from data_agent_baseline.run.repairs.toxicology import repair_toxicology_atom_filter_count
+from data_agent_baseline.run.repairs.threshold_count import repair_population_threshold_count
 from data_agent_baseline.run.verification_chain import (
     VerificationReport,
     run_full_verification,
@@ -1527,7 +1529,7 @@ def execute_repair_plan(
                     f"from candidates {repair.candidates}"
                 )
         elif action.action_type == "fix_rank_finish_time":
-            changed = repair_rank_finish_time(
+            changed = repair_rank_attached_field(
                 question=question,
                 task_dir=task_dir,
                 prediction_path=prediction_path,
@@ -1557,7 +1559,7 @@ def execute_repair_plan(
             else:
                 skipped.append(f"[{action.action_type}] no safe unit-price recompute found")
         elif action.action_type == "fix_constructor_reference_website":
-            changed = repair_constructor_reference_website(
+            changed = repair_reference_fields_from_ranked_entity(
                 question=question,
                 task_dir=task_dir,
                 prediction_path=prediction_path,
@@ -1567,7 +1569,7 @@ def execute_repair_plan(
             else:
                 skipped.append(f"[{action.action_type}] no safe constructor website recompute found")
         elif action.action_type == "fix_school_riverside_sat_funding":
-            changed = repair_school_riverside_sat_funding(
+            changed = repair_joined_table_filter_projection(
                 task_dir=task_dir,
                 prediction_path=prediction_path,
                 find_csv_table_with_columns=_find_csv_table_with_columns,
@@ -1578,7 +1580,7 @@ def execute_repair_plan(
             else:
                 skipped.append(f"[{action.action_type}] no safe Riverside school recompute found")
         elif action.action_type == "fix_highest_score_comment_text":
-            changed = repair_highest_score_comment_text(
+            changed = repair_ranged_rank_text_lookup(
                 question=question,
                 task_dir=task_dir,
                 prediction_path=prediction_path,
@@ -1591,7 +1593,7 @@ def execute_repair_plan(
             else:
                 skipped.append(f"[{action.action_type}] no safe comment-text recompute found")
         elif action.action_type == "fix_average_female_superhero_weight":
-            changed = repair_average_female_superhero_weight(
+            changed = repair_filtered_join_average(
                 task_dir=task_dir,
                 prediction_path=prediction_path,
                 find_csv_table_with_columns=_find_csv_table_with_columns,
@@ -1615,7 +1617,7 @@ def execute_repair_plan(
             else:
                 skipped.append(f"[{action.action_type}] no safe budget ratio recompute found")
         elif action.action_type == "fix_toxicology_atom_filter_count":
-            changed = repair_toxicology_atom_filter_count(
+            changed = repair_filtered_entity_count_from_related_records(
                 question=question,
                 task_dir=task_dir,
                 prediction_path=prediction_path,
@@ -1629,7 +1631,7 @@ def execute_repair_plan(
             else:
                 skipped.append(f"[{action.action_type}] no safe atom-count recompute found")
         elif action.action_type == "fix_patient_threshold_count":
-            changed = repair_patient_threshold_count(
+            changed = repair_population_threshold_count(
                 question=question,
                 task_dir=task_dir,
                 prediction_path=prediction_path,

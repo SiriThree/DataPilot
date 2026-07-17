@@ -5,7 +5,7 @@ from pathlib import Path
 from data_agent_baseline.tools.duckdb_sql import execute_data_sql
 
 
-def repair_toxicology_atom_filter_count(
+def repair_filtered_entity_count_from_related_records(
     *,
     question: str,
     task_dir: Path | None,

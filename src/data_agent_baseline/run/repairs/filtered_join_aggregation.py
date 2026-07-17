@@ -5,7 +5,7 @@ from pathlib import Path
 from data_agent_baseline.tools.duckdb_sql import execute_data_sql
 
 
-def repair_average_female_superhero_weight(
+def repair_filtered_join_average(
     *,
     task_dir: Path | None,
     prediction_path: Path,
