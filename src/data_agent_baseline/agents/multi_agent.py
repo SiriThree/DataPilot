@@ -92,6 +92,24 @@ class MultiAgentConfig:
     max_verifier_rounds: int = 12  # Max plan-execute-verify rounds
 
 
+def _fallback_answer_step(step_num: int) -> PlanStep:
+    return PlanStep(
+        step=max(step_num, 1),
+        tool="answer",
+        description="Submit final answer with best available evidence",
+        expected_output="prediction.csv",
+    )
+
+
+def _ensure_current_plan_step(plan_steps: list[PlanStep], current_idx: int) -> int:
+    if current_idx < 0:
+        current_idx = 0
+    if current_idx >= len(plan_steps):
+        plan_steps.append(_fallback_answer_step(len(plan_steps) + 1))
+        current_idx = len(plan_steps) - 1
+    return current_idx
+
+
 def _summarize_profile_for_plan(profile_content: dict[str, Any]) -> str:
     """Extract compact data summary from profile_context result for the planner."""
     parts: list[str] = []
@@ -328,15 +346,7 @@ class MultiAgentLoop:
 
         while step_index <= self.config.max_steps and verifier_rounds < self.config.max_verifier_rounds:
             # Determine which plan step to execute
-            if current_plan_step_idx >= len(plan_steps):
-                # Out of plan steps — router should have added or we answer
-                plan_steps.append(PlanStep(
-                    step=len(plan_steps) + 1,
-                    tool="answer",
-                    description="Submit final answer with best available evidence",
-                    expected_output="prediction.csv",
-                ))
-
+            current_plan_step_idx = _ensure_current_plan_step(plan_steps, current_plan_step_idx)
             target_step = plan_steps[current_plan_step_idx]
             steps_remaining = self.config.max_steps - step_index + 1
 
