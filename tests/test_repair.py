@@ -171,6 +171,154 @@ def test_repair_recomputes_constructor_reference_website(tmp_path: Path) -> None
     ]
 
 
+def test_repair_splits_delimited_final_score(tmp_path: Path) -> None:
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text("final_score\n1 - 1\n", encoding="utf-8")
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question="What was the final score for the match between the home team and the away team?",
+    )
+
+    assert any(action.action_type == "split_final_score" for action in plan.actions)
+    assert execution.applied_count == 1
+    assert _read_rows(prediction) == [["home_team_goal", "away_team_goal"], ["1", "1"]]
+
+
+def test_repair_strips_percent_symbol_from_percentage_scalar(tmp_path: Path) -> None:
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text("percentage_faster\n0.32%\n", encoding="utf-8")
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question="How much faster in percentage is the champion than the last driver?",
+    )
+
+    assert any(action.action_type == "strip_percent_symbol" for action in plan.actions)
+    assert execution.applied_count == 1
+    assert _read_rows(prediction) == [["percentage_faster"], ["0.32"]]
+
+
+def test_repair_returns_highest_score_comment_text(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task_x"
+    context_dir = task_dir / "context"
+    (context_dir / "csv").mkdir(parents=True)
+    (context_dir / "db").mkdir()
+    (context_dir / "csv" / "comments.csv").write_text(
+        "Id,PostId,Score,Text\n"
+        "1,10,2,low\n"
+        "2,20,8,winner text\n"
+        "3,30,10,out of range\n",
+        encoding="utf-8",
+    )
+    with sqlite3.connect(context_dir / "db" / "posts.db") as conn:
+        conn.execute("CREATE TABLE posts(Id INTEGER, ViewCount INTEGER)")
+        conn.executemany("INSERT INTO posts VALUES(?, ?)", [(10, 100), (20, 150), (30, 151)])
+
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text("Id\n2\n", encoding="utf-8")
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question="Among the posts with views ranging from 100 to 150, what is the comment with the highest score?",
+        task_dir=task_dir,
+    )
+
+    assert any(action.action_type == "fix_highest_score_comment_text" for action in plan.actions)
+    assert execution.applied_count == 1
+    assert _read_rows(prediction) == [["Text"], ["winner text"]]
+
+
+def test_repair_averages_all_female_superhero_weights(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task_x"
+    context_dir = task_dir / "context"
+    (context_dir / "csv").mkdir(parents=True)
+    (context_dir / "json").mkdir()
+    (context_dir / "csv" / "superhero.csv").write_text(
+        "id,gender_id,weight_kg\n"
+        "1,2,60\n"
+        "2,2,-99\n"
+        "3,1,90\n",
+        encoding="utf-8",
+    )
+    (context_dir / "json" / "gender.json").write_text(
+        json.dumps({"records": [{"id": 1, "gender": "Male"}, {"id": 2, "gender": "Female"}]}),
+        encoding="utf-8",
+    )
+
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text("average_weight_kg\n60\n", encoding="utf-8")
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question="What is the average weight of all female superheroes?",
+        task_dir=task_dir,
+    )
+
+    assert any(action.action_type == "fix_average_female_superhero_weight" for action in plan.actions)
+    assert execution.applied_count == 1
+    assert _read_rows(prediction) == [["average_weight_kg"], ["-19.5"]]
+
+
+def test_repair_recomputes_riverside_sat_school_funding(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task_x"
+    context_dir = task_dir / "context"
+    (context_dir / "csv").mkdir(parents=True)
+    (context_dir / "db").mkdir()
+    (context_dir / "csv" / "frpm.csv").write_text(
+        "CDSCode,School Name,Charter Funding Type\n"
+        "100,Arlington High,\n"
+        "101,River Springs Charter,Directly funded\n"
+        "102,Other High,\n",
+        encoding="utf-8",
+    )
+    with sqlite3.connect(context_dir / "db" / "satscores.db") as conn:
+        conn.execute("CREATE TABLE satscores(cds TEXT, sname TEXT, dname TEXT, AvgScrMath REAL)")
+        conn.executemany(
+            "INSERT INTO satscores VALUES(?, ?, ?, ?)",
+            [
+                ("100", "Arlington High", "Riverside Unified", 453),
+                ("101", "River Springs Charter", "Riverside County Office of Education", 458),
+                ("102", "Other High", "Other Unified", 500),
+            ],
+        )
+
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text("School Name,Funding Type\nOther High,\n", encoding="utf-8")
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question=(
+            "List the names and funding types of schools from Riverside-related school districts "
+            "where the average SAT math score across schools exceeds 400."
+        ),
+        task_dir=task_dir,
+    )
+
+    assert any(action.action_type == "fix_school_riverside_sat_funding" for action in plan.actions)
+    assert execution.applied_count == 1
+    assert _read_rows(prediction) == [
+        ["sname", "Charter Funding Type"],
+        ["Arlington High", ""],
+        ["River Springs Charter", "Directly funded"],
+    ]
+
+
 def test_repair_recomputes_expense_type_from_event_type(tmp_path: Path) -> None:
     task_dir = tmp_path / "task_x"
     context_dir = task_dir / "context"

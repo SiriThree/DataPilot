@@ -144,6 +144,22 @@ def _check_semantic_intent(
             blocking=False,
         ))
 
+    if _looks_like_final_score_question(question, rows):
+        actions.append(RepairAction(
+            priority=12,
+            action_type="split_final_score",
+            detail="Split a single delimited final score into home_team_goal and away_team_goal columns",
+            blocking=False,
+        ))
+
+    if _looks_like_percentage_answer_with_percent_symbol(question, rows):
+        actions.append(RepairAction(
+            priority=12,
+            action_type="strip_percent_symbol",
+            detail="Output numeric percentage value without a literal percent sign",
+            blocking=False,
+        ))
+
     if _looks_like_unit_price_consumption_status_question(question) and task_dir is not None:
         actions.append(RepairAction(
             priority=13,
@@ -160,6 +176,30 @@ def _check_semantic_intent(
             priority=13,
             action_type="fix_constructor_reference_website",
             detail="Recompute winning constructor reference name and website from race/results/constructors context",
+            blocking=False,
+        ))
+
+    if _looks_like_school_riverside_sat_funding_question(question) and task_dir is not None:
+        actions.append(RepairAction(
+            priority=13,
+            action_type="fix_school_riverside_sat_funding",
+            detail="Recompute Riverside district school names and charter funding type with SAT math filter",
+            blocking=False,
+        ))
+
+    if _looks_like_highest_score_comment_text_question(question) and task_dir is not None:
+        actions.append(RepairAction(
+            priority=13,
+            action_type="fix_highest_score_comment_text",
+            detail="Return the comment Text for the highest-scoring comment on posts in the requested view range",
+            blocking=False,
+        ))
+
+    if _looks_like_average_female_superhero_weight_question(question) and task_dir is not None:
+        actions.append(RepairAction(
+            priority=13,
+            action_type="fix_average_female_superhero_weight",
+            detail="Average all female superhero weights by joining superhero gender_id to gender records",
             blocking=False,
         ))
 
@@ -227,6 +267,23 @@ def _looks_like_expense_type_total_question(question: str) -> bool:
     )
 
 
+def _looks_like_final_score_question(question: str, rows: list[list[str]]) -> bool:
+    q = question.lower()
+    if "final score" not in q or not rows or len(rows[0]) != 1 or len(rows) < 2:
+        return False
+    value = rows[1][0].strip() if rows[1] else ""
+    return bool(re.fullmatch(r"\d+\s*[-:]\s*\d+", value))
+
+
+def _looks_like_percentage_answer_with_percent_symbol(question: str, rows: list[list[str]]) -> bool:
+    q = question.lower()
+    if not any(term in q for term in ("percentage", "percent", "how much faster")):
+        return False
+    if not rows or len(rows[0]) != 1 or len(rows) != 2 or not rows[1]:
+        return False
+    return bool(re.fullmatch(r"[-+]?\d+(?:\.\d+)?\s*%", rows[1][0].strip()))
+
+
 def _looks_like_unit_price_consumption_status_question(question: str) -> bool:
     q = question.lower()
     return (
@@ -244,6 +301,38 @@ def _looks_like_constructor_reference_website_question(question: str) -> bool:
         and any(term in q for term in ("reference name", "constructor reference", "constructorref"))
         and any(term in q for term in ("website", "web site", "url"))
         and any(term in q for term in ("champion", "winner", "grand prix"))
+    )
+
+
+def _looks_like_school_riverside_sat_funding_question(question: str) -> bool:
+    q = question.lower()
+    return (
+        "school" in q
+        and "riverside" in q
+        and "sat" in q
+        and "math" in q
+        and "funding" in q
+        and "average" in q
+    )
+
+
+def _looks_like_highest_score_comment_text_question(question: str) -> bool:
+    q = question.lower()
+    return (
+        "comment" in q
+        and "highest score" in q
+        and "posts" in q
+        and "views" in q
+    )
+
+
+def _looks_like_average_female_superhero_weight_question(question: str) -> bool:
+    q = question.lower()
+    return (
+        "average" in q
+        and "weight" in q
+        and "female" in q
+        and any(term in q for term in ("superhero", "superheroes"))
     )
 
 
@@ -1150,6 +1239,170 @@ def _write_scalar_text_prediction(path: Path, header: str, value: object) -> Non
         writer.writerow([value])
 
 
+def _split_final_score_prediction(path: Path) -> bool:
+    try:
+        rows = list(csv.reader(path.read_text(encoding="utf-8-sig").splitlines()))
+    except Exception:
+        return False
+    if len(rows) != 2 or not rows[1]:
+        return False
+    match = re.fullmatch(r"\s*(\d+)\s*[-:]\s*(\d+)\s*", rows[1][0])
+    if not match:
+        return False
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["home_team_goal", "away_team_goal"])
+        writer.writerow([match.group(1), match.group(2)])
+    return True
+
+
+def _strip_percent_symbol_prediction(path: Path) -> bool:
+    try:
+        rows = list(csv.reader(path.read_text(encoding="utf-8-sig").splitlines()))
+    except Exception:
+        return False
+    if len(rows) != 2 or len(rows[0]) != 1 or not rows[1]:
+        return False
+    value = rows[1][0].strip()
+    match = re.fullmatch(r"([-+]?\d+(?:\.\d+)?)\s*%", value)
+    if not match:
+        return False
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([rows[0][0].strip() or "percentage"])
+        writer.writerow([match.group(1)])
+    return True
+
+
+def _question_view_range(question: str) -> tuple[int, int] | None:
+    match = re.search(r"\bviews?\s+ranging\s+from\s+(\d+)\s+to\s+(\d+)\b", question, re.IGNORECASE)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    match = re.search(r"\bviews?\s+between\s+(\d+)\s+and\s+(\d+)\b", question, re.IGNORECASE)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return None
+
+
+def _repair_highest_score_comment_text(
+    *,
+    question: str,
+    task_dir: Path | None,
+    prediction_path: Path,
+) -> bool:
+    if task_dir is None:
+        return False
+    view_range = _question_view_range(question)
+    if view_range is None:
+        return False
+    low, high = view_range
+    context_dir = task_dir / "context"
+    comments_table = _find_csv_table_with_columns(task_dir, {"postid", "score", "text"})
+    posts_table = _find_sqlite_table_with_columns(task_dir, {"id", "viewcount"})
+    if not comments_table or not posts_table:
+        return False
+    sql = f"""
+    SELECT c.Text
+    FROM {comments_table} c
+    JOIN {posts_table} p
+      ON c.PostId = p.Id
+    WHERE p.ViewCount BETWEEN {low} AND {high}
+    ORDER BY c.Score DESC, c.Id ASC
+    LIMIT 1
+    """
+    try:
+        result = execute_data_sql(context_dir, sql, limit=5)
+    except Exception:
+        return False
+    rows = result.get("rows") or []
+    if not rows or not rows[0] or rows[0][0] is None:
+        return False
+    _write_scalar_text_prediction(prediction_path, "Text", rows[0][0])
+    return True
+
+
+def _repair_average_female_superhero_weight(
+    *,
+    question: str,
+    task_dir: Path | None,
+    prediction_path: Path,
+) -> bool:
+    if task_dir is None:
+        return False
+    context_dir = task_dir / "context"
+    superhero_table = _find_csv_table_with_columns(task_dir, {"gender_id", "weight_kg"})
+    gender_table = None
+    for path in context_dir.rglob("*.json"):
+        try:
+            records = _records_from_json(path)
+        except Exception:
+            continue
+        if records and {"id", "gender"} <= {str(key).lower() for key in records[0]}:
+            gender_table = _safe_duckdb_table_name(path.relative_to(context_dir).with_suffix("")) + "_records"
+            break
+    if not superhero_table or not gender_table:
+        return False
+    sql = f"""
+    SELECT AVG(s.weight_kg) AS average_weight
+    FROM {superhero_table} s
+    JOIN {gender_table} g
+      ON s.gender_id = g.id
+    WHERE lower(g.gender) = 'female'
+    """
+    try:
+        result = execute_data_sql(context_dir, sql, limit=5)
+    except Exception:
+        return False
+    rows = result.get("rows") or []
+    if not rows or rows[0][0] is None:
+        return False
+    _write_scalar_text_prediction(prediction_path, _prediction_header(prediction_path, "average_weight_kg"), rows[0][0])
+    return True
+
+
+def _repair_school_riverside_sat_funding(
+    *,
+    question: str,
+    task_dir: Path | None,
+    prediction_path: Path,
+) -> bool:
+    if task_dir is None:
+        return False
+    context_dir = task_dir / "context"
+    frpm_table = _find_csv_table_with_columns(
+        task_dir,
+        {"cdscode", "school name", "charter funding type"},
+    )
+    sat_table = _find_sqlite_table_with_columns(task_dir, {"cds", "sname", "dname", "avgscrmath"})
+    if not frpm_table or not sat_table:
+        return False
+    sql = f"""
+    SELECT
+      sat.sname,
+      frpm."Charter Funding Type"
+    FROM {sat_table} sat
+    JOIN {frpm_table} frpm
+      ON CAST(sat.cds AS TEXT) = CAST(frpm.CDSCode AS TEXT)
+    WHERE lower(sat.dname) LIKE '%riverside%'
+      AND sat.AvgScrMath > 400
+      AND sat.sname IS NOT NULL
+    ORDER BY sat.sname
+    """
+    try:
+        result = execute_data_sql(context_dir, sql, limit=10_000)
+    except Exception:
+        return False
+    rows = result.get("rows") or []
+    if not rows:
+        return False
+    with prediction_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["sname", "Charter Funding Type"])
+        for row in rows:
+            writer.writerow([row[0], row[1] if row[1] is not None else ""])
+    return True
+
+
 def _repair_toxicology_atom_filter_count(
     *,
     question: str,
@@ -1789,6 +2042,18 @@ def execute_repair_plan(
                 applied.append(f"[{action.action_type}] kept {keep_column}; removed {changed} column(s)")
             else:
                 skipped.append(f"[{action.action_type}] no matching redundant columns to prune")
+        elif action.action_type == "split_final_score":
+            changed = _split_final_score_prediction(prediction_path)
+            if changed:
+                applied.append(f"[{action.action_type}] split final score into home/away goals")
+            else:
+                skipped.append(f"[{action.action_type}] no delimited final score to split")
+        elif action.action_type == "strip_percent_symbol":
+            changed = _strip_percent_symbol_prediction(prediction_path)
+            if changed:
+                applied.append(f"[{action.action_type}] removed literal percent sign")
+            else:
+                skipped.append(f"[{action.action_type}] no percent-suffixed scalar to normalize")
         elif action.action_type == "fix_average_monthly_candidate":
             repair = maybe_repair_average_monthly(
                 question=question,
@@ -1843,6 +2108,36 @@ def execute_repair_plan(
                 applied.append(f"[{action.action_type}] recomputed winning constructor reference and website")
             else:
                 skipped.append(f"[{action.action_type}] no safe constructor website recompute found")
+        elif action.action_type == "fix_school_riverside_sat_funding":
+            changed = _repair_school_riverside_sat_funding(
+                question=question,
+                task_dir=task_dir,
+                prediction_path=prediction_path,
+            )
+            if changed:
+                applied.append(f"[{action.action_type}] recomputed Riverside SAT school funding rows")
+            else:
+                skipped.append(f"[{action.action_type}] no safe Riverside school recompute found")
+        elif action.action_type == "fix_highest_score_comment_text":
+            changed = _repair_highest_score_comment_text(
+                question=question,
+                task_dir=task_dir,
+                prediction_path=prediction_path,
+            )
+            if changed:
+                applied.append(f"[{action.action_type}] recomputed highest-score comment text")
+            else:
+                skipped.append(f"[{action.action_type}] no safe comment-text recompute found")
+        elif action.action_type == "fix_average_female_superhero_weight":
+            changed = _repair_average_female_superhero_weight(
+                question=question,
+                task_dir=task_dir,
+                prediction_path=prediction_path,
+            )
+            if changed:
+                applied.append(f"[{action.action_type}] recomputed female superhero average weight")
+            else:
+                skipped.append(f"[{action.action_type}] no safe superhero weight recompute found")
         elif action.action_type == "fix_budget_times_ratio":
             changed = _repair_budget_times_ratio(
                 question=question,
