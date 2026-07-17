@@ -4,15 +4,7 @@ DataPilot 是一个面向 KDD Cup 2026 DataAgent-Bench 的本地 DataAgent 项�
 
 当前项目已经不只是 starter baseline，而是一个具备本地闭环的 DataAgent 原型：包括模型网关、任务路由、ReAct / Multi-Agent 执行、工具系统、验证链、guided retry、确定性 repair、failure mining 和回归测试。
 
-## 当前重点
 
-我们现在的优化方向已经从“补单个失败任务”转向“提升泛化能力”：
-
-- 用 `task_profile` 识别任务类型，例如 `aggregation`、`rank_lookup`、`threshold_count`、`ratio_or_percentage`。
-- guided retry 根据任务类型生成更具体的重试策略。
-- deterministic repair 按 reasoning pattern 组织，而不是按公开集领域命名。
-- failure mining 自动聚类低分任务，并给出下一步开发建议。
-- 避免继续堆 public demo 特例，优先抽象通用 verifier / solver。
 
 ## 项目能做什么
 
@@ -113,30 +105,6 @@ profile_context -> execute_data_sql -> execute_python -> answer
 
 对于大 CSV，路由会优先提示使用 DuckDB SQL，避免直接 `pandas.read_csv` 全表读取。
 
-## Repair 去特例化
-
-`src/data_agent_baseline/run/repairs/` 现在按通用 pattern 命名：
-
-```text
-filtered_entity_count.py
-filtered_join_aggregation.py
-joined_table_filter.py
-rank_lookup.py
-ranged_rank_lookup.py
-threshold_count.py
-output_shape.py
-scalar_format.py
-```
-
-这一步的目的不是删除已有能力，而是把“领域补丁”逐步迁移成“通用推理模式”：
-
-- rank lookup：处理排名字段、排序语义、附属字段查找。
-- threshold count：处理阈值、群体过滤、实体级计数。
-- filtered entity count：处理跨表/跨记录过滤后的实体计数。
-- joined table filter：处理表连接、过滤、字段投影。
-- filtered join aggregation：处理 join 后的过滤聚合。
-
-后续新增 repair 应优先进入这些通用模式，而不是按某个 public task 或领域创建新模块。
 
 ## 安装
 
@@ -365,37 +333,6 @@ docker run --rm `
   datapilot
 ```
 
-## 不要提交的内容
 
-以下内容不应提交：
 
-- `.env`
-- `.venv/`
-- `data/`
-- `artifacts/runs/`
-- `.pytest_cache/`
-- `__pycache__/`
-- `configs/react_baseline.local.yaml`
 
-仓库保留：
-
-- 代码
-- example config
-- 文档
-- 测试
-- `uv.lock`
-- `artifacts/.gitkeep`
-
-## 当前建议工作流
-
-现在不建议继续盲目加 repair。更稳的流程是：
-
-1. 跑一轮 `--limit 20` benchmark。
-2. 评测并生成 `evaluation.json`。
-3. 运行 `dabench mine-failures`。
-4. 只根据 recurring failure modes 补通用 verifier / solver。
-5. 再跑 ablation，对比无 repair、通用 repair、全量 repair 的效果。
-
-## 一句话总结
-
-DataPilot 当前已经具备完整 DataAgent 闭环。下一阶段的重点不是继续堆公开集特例，而是通过任务路由、语义校验、guided retry、failure mining 和通用 pattern solver，提高 medium / hard 任务上的稳定性和泛化能力。
