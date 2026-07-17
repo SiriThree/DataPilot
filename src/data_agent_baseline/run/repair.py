@@ -16,11 +16,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from data_agent_baseline.run.average_monthly_verifier import maybe_repair_average_monthly
+from data_agent_baseline.run.repairs.formula1 import (
+    repair_constructor_reference_website,
+    repair_rank_finish_time,
+)
+from data_agent_baseline.run.repairs.medical import repair_patient_threshold_count
 from data_agent_baseline.run.repairs.output_shape import split_final_score_prediction
 from data_agent_baseline.run.repairs.scalar_format import strip_percent_symbol_prediction
 from data_agent_baseline.run.repairs.school import repair_school_riverside_sat_funding
 from data_agent_baseline.run.repairs.stackexchange import repair_highest_score_comment_text
 from data_agent_baseline.run.repairs.superhero import repair_average_female_superhero_weight
+from data_agent_baseline.run.repairs.toxicology import repair_toxicology_atom_filter_count
 from data_agent_baseline.run.verification_chain import (
     VerificationReport,
     run_full_verification,
@@ -894,27 +900,6 @@ def _safe_duckdb_table_name(path: Path) -> str:
     return safe[:96]
 
 
-def _question_rank_value(question: str) -> int | None:
-    q = question.lower()
-    ordinals = {
-        "first": 1,
-        "1st": 1,
-        "second": 2,
-        "2nd": 2,
-        "third": 3,
-        "3rd": 3,
-        "fourth": 4,
-        "4th": 4,
-        "fifth": 5,
-        "5th": 5,
-    }
-    for token, value in ordinals.items():
-        if re.search(rf"\b{re.escape(token)}\b", q):
-            return value
-    match = re.search(r"\brank(?:ed)?\s+(\d+)\b", q)
-    return int(match.group(1)) if match else None
-
-
 def _records_from_json(path: Path) -> list[dict]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(payload, dict) and isinstance(payload.get("records"), list):
@@ -922,207 +907,6 @@ def _records_from_json(path: Path) -> list[dict]:
     if isinstance(payload, list):
         return [record for record in payload if isinstance(record, dict)]
     return []
-
-
-def _find_race_record(task_dir: Path, question: str) -> dict | None:
-    year = _question_year(question)
-    if year is None:
-        return None
-    q = question.lower()
-    context_dir = task_dir / "context"
-    for path in context_dir.rglob("*.json"):
-        try:
-            records = _records_from_json(path)
-        except Exception:
-            continue
-        for record in records:
-            keys = {str(key).lower(): key for key in record}
-            name_key = keys.get("name") or keys.get("race_name")
-            year_key = keys.get("year")
-            race_id_key = keys.get("raceid") or keys.get("race_id") or keys.get("id")
-            if not name_key or not year_key or not race_id_key:
-                continue
-            try:
-                record_year = int(record.get(year_key))
-            except (TypeError, ValueError):
-                continue
-            name = str(record.get(name_key, "")).strip()
-            if record_year == year and name and name.lower() in q:
-                return {
-                    "race_id": str(record.get(race_id_key)).strip(),
-                    "name": name,
-                    "year": record_year,
-                }
-    return None
-
-
-def _repair_rank_finish_time(
-    *,
-    question: str,
-    task_dir: Path | None,
-    prediction_path: Path,
-) -> bool:
-    if task_dir is None:
-        return False
-    race = _find_race_record(task_dir, question)
-    rank_value = _question_rank_value(question)
-    if not race or rank_value is None:
-        return False
-    race_id = str(race["race_id"])
-
-    context_dir = task_dir / "context"
-    for path in context_dir.rglob("*.csv"):
-        try:
-            rows = list(csv.DictReader(path.read_text(encoding="utf-8-sig").splitlines()))
-        except Exception:
-            continue
-        if not rows:
-            continue
-        columns = {column.lower(): column for column in rows[0]}
-        race_col = columns.get("raceid") or columns.get("race_id")
-        rank_col = columns.get("rank")
-        time_col = columns.get("time") or columns.get("finish_time")
-        if not race_col or not rank_col or not time_col:
-            continue
-        for row in rows:
-            try:
-                row_rank = int(float(str(row.get(rank_col, "")).strip()))
-            except ValueError:
-                continue
-            if str(row.get(race_col, "")).strip() == race_id and row_rank == rank_value:
-                finish_time = str(row.get(time_col, "")).strip()
-                if not finish_time:
-                    return False
-                with prediction_path.open("w", encoding="utf-8", newline="") as handle:
-                    writer = csv.writer(handle)
-                    writer.writerow(["time"])
-                    writer.writerow([finish_time])
-                return True
-    return False
-
-
-def _question_grand_prix_name(question: str) -> str | None:
-    match = re.search(r"\b([A-Za-z][A-Za-z ]+?\s+Grand Prix)\b", question, re.IGNORECASE)
-    if not match:
-        return None
-    return re.sub(r"\s+", " ", match.group(1)).strip()
-
-
-def _find_race_id_in_docs(task_dir: Path, race_name: str, year: int | None) -> str | None:
-    context_dir = task_dir / "context"
-    target = race_name.lower()
-    for path in list(context_dir.rglob("*.md")) + list(context_dir.rglob("*.txt")):
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        paragraphs = re.split(r"\n\s*\n", text)
-        for paragraph in paragraphs:
-            compact = " ".join(paragraph.split())
-            lower = compact.lower()
-            if target not in lower:
-                continue
-            if year is not None and str(year) not in compact:
-                continue
-            match = re.search(
-                r"\b(?:race\s*id|raceid|race_id)\s*[:#=]?\s*(\d+)\b",
-                compact,
-                re.IGNORECASE,
-            )
-            if match:
-                return match.group(1)
-    return None
-
-
-def _winning_constructor_id(task_dir: Path, race_id: str) -> str | None:
-    context_dir = task_dir / "context"
-    for path in context_dir.rglob("*"):
-        if path.suffix.lower() not in {".db", ".sqlite", ".sqlite3", ".db3"} or not path.is_file():
-            continue
-        try:
-            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
-                table_names = [
-                    row[0]
-                    for row in conn.execute(
-                        "SELECT name FROM sqlite_master "
-                        "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                    )
-                ]
-                for table_name in table_names:
-                    quoted = '"' + table_name.replace('"', '""') + '"'
-                    columns = [row[1] for row in conn.execute(f"PRAGMA table_info({quoted})")]
-                    lower = {column.lower(): column for column in columns}
-                    race_col = lower.get("raceid") or lower.get("race_id")
-                    constructor_col = lower.get("constructorid") or lower.get("constructor_id")
-                    position_col = lower.get("positionorder") or lower.get("position_order")
-                    if not race_col or not constructor_col or not position_col:
-                        continue
-                    query = (
-                        f'SELECT "{constructor_col}" FROM {quoted} '
-                        f'WHERE CAST("{race_col}" AS TEXT) = ? '
-                        f'AND CAST("{position_col}" AS INTEGER) = 1 '
-                        "LIMIT 1"
-                    )
-                    row = conn.execute(query, (race_id,)).fetchone()
-                    if row and row[0] is not None:
-                        return str(row[0]).strip()
-        except Exception:
-            continue
-    return None
-
-
-def _constructor_reference_record(task_dir: Path, constructor_id: str) -> tuple[str, str] | None:
-    target = str(constructor_id).strip()
-    for path in (task_dir / "context").rglob("*.json"):
-        try:
-            records = _records_from_json(path)
-        except Exception:
-            continue
-        for record in records:
-            keys = {str(key).lower(): key for key in record}
-            id_key = keys.get("constructorid") or keys.get("constructor_id") or keys.get("id")
-            ref_key = keys.get("constructorref") or keys.get("constructor_ref") or keys.get("ref")
-            url_key = keys.get("url") or keys.get("website") or keys.get("web_site")
-            if not id_key or not ref_key or not url_key:
-                continue
-            if str(record.get(id_key, "")).strip() != target:
-                continue
-            constructor_ref = str(record.get(ref_key, "")).strip()
-            url = str(record.get(url_key, "")).strip()
-            if constructor_ref and url:
-                return constructor_ref, url
-    return None
-
-
-def _repair_constructor_reference_website(
-    *,
-    question: str,
-    task_dir: Path | None,
-    prediction_path: Path,
-) -> bool:
-    if task_dir is None:
-        return False
-    race_name = _question_grand_prix_name(question)
-    if not race_name:
-        return False
-    race_id = _find_race_id_in_docs(task_dir, race_name, _question_year(question))
-    if race_id is None:
-        race = _find_race_record(task_dir, question)
-        race_id = str(race["race_id"]) if race else None
-    if race_id is None:
-        return False
-    constructor_id = _winning_constructor_id(task_dir, race_id)
-    if constructor_id is None:
-        return False
-    record = _constructor_reference_record(task_dir, constructor_id)
-    if record is None:
-        return False
-    constructor_ref, url = record
-    with prediction_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["constructorRef", "url"])
-        writer.writerow([constructor_ref, url])
-    return True
 
 
 def _find_sqlite_table_with_columns(task_dir: Path, required_columns: set[str]) -> str | None:
@@ -1242,55 +1026,6 @@ def _write_scalar_text_prediction(path: Path, header: str, value: object) -> Non
         writer = csv.writer(handle)
         writer.writerow([header or "answer"])
         writer.writerow([value])
-
-
-def _repair_toxicology_atom_filter_count(
-    *,
-    question: str,
-    task_dir: Path | None,
-    prediction_path: Path,
-) -> bool:
-    if task_dir is None:
-        return False
-    context_dir = task_dir / "context"
-    atom_table = _find_csv_table_with_columns(task_dir, {"atom_id", "molecule_id", "element"})
-    bond_table = _find_sqlite_table_with_columns(task_dir, {"bond_id", "molecule_id", "bond_type"})
-    if not atom_table or not bond_table:
-        return False
-
-    q = question.lower()
-    elements: list[str] = []
-    if "phosphorus" in q:
-        elements.append("p")
-    if "bromine" in q:
-        elements.append("br")
-    if not elements:
-        return False
-    element_sql = ", ".join("'" + element.replace("'", "''") + "'" for element in elements)
-
-    sql = f"""
-    SELECT COUNT(DISTINCT a.atom_id) AS answer
-    FROM {atom_table} a
-    WHERE LOWER(a.element) IN ({element_sql})
-      AND a.molecule_id IN (
-        SELECT DISTINCT molecule_id
-        FROM {bond_table}
-        WHERE bond_type = '#'
-      )
-    """
-    try:
-        result = execute_data_sql(context_dir, sql, limit=5)
-    except Exception:
-        return False
-    rows = result.get("rows") or []
-    if not rows:
-        return False
-    _write_scalar_text_prediction(
-        prediction_path,
-        _prediction_header(prediction_path, "total_atoms"),
-        rows[0][0],
-    )
-    return True
 
 
 def _quoted_names(question: str) -> list[str]:
@@ -1452,124 +1187,6 @@ def _repair_budget_times_ratio(
         prediction_path,
         _prediction_header(prediction_path, "ratio"),
         repr(float(ratio)),
-    )
-    return True
-
-
-PATIENT_SEX_RE = re.compile(
-    r"(?:Patient|subject identified as|subject|record for Patient|file for Patient)\s+"
-    r"(?P<id>\d{3,})[^.]{0,180}?\b(?P<sex>male|female)\b",
-    re.IGNORECASE,
-)
-
-
-def _patient_population_ids(task_dir: Path, sex_value: str) -> set[str]:
-    context_dir = task_dir / "context"
-    wanted = sex_value.upper()[0]
-    ids: set[str] = set()
-    for path in context_dir.rglob("*.csv"):
-        try:
-            rows = list(csv.DictReader(path.read_text(encoding="utf-8-sig").splitlines()))
-        except Exception:
-            continue
-        if not rows:
-            continue
-        keys = {key.lower(): key for key in rows[0]}
-        id_key = keys.get("id")
-        sex_key = keys.get("sex") or keys.get("gender")
-        if not id_key or not sex_key:
-            continue
-        for row in rows:
-            if str(row.get(sex_key, "")).strip().upper()[:1] == wanted:
-                raw_id = str(row.get(id_key, "")).strip()
-                if raw_id:
-                    ids.add(raw_id)
-    for path in context_dir.rglob("*.md"):
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for match in PATIENT_SEX_RE.finditer(text):
-            if match.group("sex").lower().startswith(sex_value.lower()[0]):
-                ids.add(match.group("id"))
-    return ids
-
-
-def _repair_patient_threshold_count(
-    *,
-    question: str,
-    task_dir: Path | None,
-    prediction_path: Path,
-) -> bool:
-    if task_dir is None:
-        return False
-    q = question.lower()
-    if "male" in q:
-        sex_value = "male"
-    elif "female" in q:
-        sex_value = "female"
-    else:
-        return False
-    lab_path: Path | None = None
-    for path in (task_dir / "context").rglob("*.csv"):
-        try:
-            with path.open("r", encoding="utf-8-sig", newline="") as handle:
-                header = {cell.strip().lower() for cell in next(csv.reader(handle), [])}
-        except Exception:
-            continue
-        if {"id", "wbc", "fg"} <= header:
-            lab_path = path
-            break
-    if lab_path is None:
-        return False
-
-    rows = list(csv.DictReader(lab_path.read_text(encoding="utf-8-sig").splitlines()))
-    wbc_values: list[float] = []
-    for row in rows:
-        try:
-            wbc_values.append(float(str(row.get("WBC", "")).strip()))
-        except ValueError:
-            continue
-    if not wbc_values:
-        return False
-    ordered = sorted(wbc_values)
-
-    def quantile(q_value: float) -> float:
-        if not ordered:
-            return 0.0
-        pos = (len(ordered) - 1) * q_value
-        lo = int(pos)
-        hi = min(lo + 1, len(ordered) - 1)
-        frac = pos - lo
-        return ordered[lo] * (1 - frac) + ordered[hi] * frac
-
-    normal_low = round(quantile(0.05), 1)
-    normal_high = round(quantile(0.95), 1)
-    population_ids = _patient_population_ids(task_dir, sex_value)
-    if not population_ids:
-        return False
-    normal_wbc_ids: set[str] = set()
-    abnormal_fg_ids: set[str] = set()
-    for row in rows:
-        entity_id = str(row.get("ID", "")).strip()
-        if entity_id not in population_ids:
-            continue
-        try:
-            wbc = float(str(row.get("WBC", "")).strip())
-            if normal_low <= wbc <= normal_high:
-                normal_wbc_ids.add(entity_id)
-        except ValueError:
-            pass
-        try:
-            float(str(row.get("FG", "")).strip())
-            abnormal_fg_ids.add(entity_id)
-        except ValueError:
-            pass
-    answer = len(normal_wbc_ids & abnormal_fg_ids)
-    _write_scalar_text_prediction(
-        prediction_path,
-        _prediction_header(prediction_path, "count"),
-        answer,
     )
     return True
 
@@ -1910,7 +1527,7 @@ def execute_repair_plan(
                     f"from candidates {repair.candidates}"
                 )
         elif action.action_type == "fix_rank_finish_time":
-            changed = _repair_rank_finish_time(
+            changed = repair_rank_finish_time(
                 question=question,
                 task_dir=task_dir,
                 prediction_path=prediction_path,
@@ -1940,7 +1557,7 @@ def execute_repair_plan(
             else:
                 skipped.append(f"[{action.action_type}] no safe unit-price recompute found")
         elif action.action_type == "fix_constructor_reference_website":
-            changed = _repair_constructor_reference_website(
+            changed = repair_constructor_reference_website(
                 question=question,
                 task_dir=task_dir,
                 prediction_path=prediction_path,
@@ -1998,20 +1615,26 @@ def execute_repair_plan(
             else:
                 skipped.append(f"[{action.action_type}] no safe budget ratio recompute found")
         elif action.action_type == "fix_toxicology_atom_filter_count":
-            changed = _repair_toxicology_atom_filter_count(
+            changed = repair_toxicology_atom_filter_count(
                 question=question,
                 task_dir=task_dir,
                 prediction_path=prediction_path,
+                find_csv_table_with_columns=_find_csv_table_with_columns,
+                find_sqlite_table_with_columns=_find_sqlite_table_with_columns,
+                prediction_header=_prediction_header,
+                write_scalar_text_prediction=_write_scalar_text_prediction,
             )
             if changed:
                 applied.append(f"[{action.action_type}] recomputed filtered atom count")
             else:
                 skipped.append(f"[{action.action_type}] no safe atom-count recompute found")
         elif action.action_type == "fix_patient_threshold_count":
-            changed = _repair_patient_threshold_count(
+            changed = repair_patient_threshold_count(
                 question=question,
                 task_dir=task_dir,
                 prediction_path=prediction_path,
+                prediction_header=_prediction_header,
+                write_scalar_text_prediction=_write_scalar_text_prediction,
             )
             if changed:
                 applied.append(f"[{action.action_type}] recomputed patient count with document population")
