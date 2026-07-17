@@ -87,7 +87,7 @@ def test_three_provider_configs_load_defaults(monkeypatch: pytest.MonkeyPatch) -
             "qwen-max",
             "https://dashscope.aliyuncs.com/compatible-mode/v1",
         ),
-        "react_baseline.kimi.example.yaml": ("kimi-k2.5", "https://api.moonshot.cn/v1"),
+        "react_baseline.kimi.example.yaml": ("kimi-k3", "https://api.moonshot.cn/v1"),
     }
     for filename, (model, api_base) in expected.items():
         config = load_app_config(project_root / "configs" / filename)

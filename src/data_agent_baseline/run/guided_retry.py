@@ -59,7 +59,9 @@ class AttemptEvaluation:
     semantic_risk_count: int
     warning_count: int
     data_row_count: int
-    penalty_tuple: tuple[int, int, int, int, int]
+    suspicious_output_penalty: int
+    row_count_penalty: int
+    penalty_tuple: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +127,13 @@ def _severity_count(trace: dict[str, Any], severity: str) -> int:
 def _commitments(trace: dict[str, Any]) -> dict[str, Any]:
     raw = _failure_analysis(trace).get("commitments", {})
     return raw if isinstance(raw, dict) else {}
+
+
+def _predicted_columns(trace: dict[str, Any]) -> list[str]:
+    raw = _commitments(trace).get("predicted_columns", [])
+    if not isinstance(raw, list):
+        return []
+    return [str(column).strip() for column in raw if str(column).strip()]
 
 
 def _prediction_preview(path: Path | None, *, max_rows: int = 4) -> str:
@@ -307,12 +316,20 @@ def evaluate_attempt(name: str, trace: dict[str, Any]) -> AttemptEvaluation:
     warning_count = _severity_count(trace, "warning")
     data_row_count = int(commitments.get("data_row_count") or 0)
     no_answer_penalty = 1 if not answer_present else 0
+    predicted_columns = [column.lower() for column in _predicted_columns(trace)]
+    suspicious_output_penalty = 0
+    if predicted_columns == ["answer"] and data_row_count <= 1:
+        suspicious_output_penalty += 1
+    if any(code in {"no_grounded_answer", "output_shape_error"} for code in codes):
+        suspicious_output_penalty += 1
+    row_count_penalty = 1 if answer_present and data_row_count == 0 else 0
     penalty_tuple = (
         no_answer_penalty,
         hard_error_count,
         warning_count,
         semantic_risk_count,
-        -data_row_count,
+        suspicious_output_penalty,
+        row_count_penalty,
     )
     return AttemptEvaluation(
         name=name,
@@ -321,8 +338,26 @@ def evaluate_attempt(name: str, trace: dict[str, Any]) -> AttemptEvaluation:
         semantic_risk_count=semantic_risk_count,
         warning_count=warning_count,
         data_row_count=data_row_count,
+        suspicious_output_penalty=suspicious_output_penalty,
+        row_count_penalty=row_count_penalty,
         penalty_tuple=penalty_tuple,
     )
+
+
+def _row_count_regressed(original: AttemptEvaluation, retry: AttemptEvaluation) -> bool:
+    if original.data_row_count <= 0 or retry.data_row_count <= 0:
+        return False
+    if retry.data_row_count <= original.data_row_count:
+        return False
+    if retry.hard_error_count != original.hard_error_count:
+        return False
+    if retry.warning_count != original.warning_count:
+        return False
+    if retry.semantic_risk_count != original.semantic_risk_count:
+        return False
+    inflated_by_ratio = retry.data_row_count > int(original.data_row_count * 1.25)
+    inflated_by_absolute = retry.data_row_count - original.data_row_count > 10
+    return inflated_by_ratio and inflated_by_absolute
 
 
 def select_best_attempt(
@@ -340,7 +375,13 @@ def select_best_attempt(
         "kept original because retry did not improve deterministic attempt penalties "
         f"{retry_eval.penalty_tuple} >= {original_eval.penalty_tuple}"
     )
-    if retry_eval.answer_present and retry_eval.penalty_tuple < original_eval.penalty_tuple:
+    if retry_eval.answer_present and _row_count_regressed(original_eval, retry_eval):
+        rationale = (
+            "kept original because retry only increased row count without reducing hard errors, "
+            "warnings, or semantic risks "
+            f"({original_eval.data_row_count} -> {retry_eval.data_row_count})"
+        )
+    elif retry_eval.answer_present and retry_eval.penalty_tuple < original_eval.penalty_tuple:
         selected = "retry"
         rationale = (
             "selected retry because deterministic attempt penalties improved "
@@ -386,6 +427,8 @@ def attempt_evaluation_to_dict(evaluation: AttemptEvaluation) -> dict[str, Any]:
         "semantic_risk_count": evaluation.semantic_risk_count,
         "warning_count": evaluation.warning_count,
         "data_row_count": evaluation.data_row_count,
+        "suspicious_output_penalty": evaluation.suspicious_output_penalty,
+        "row_count_penalty": evaluation.row_count_penalty,
         "penalty_tuple": list(evaluation.penalty_tuple),
     }
 

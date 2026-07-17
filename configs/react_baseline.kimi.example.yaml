@@ -3,7 +3,7 @@ dataset:
 
 agent:
   provider: openai_compatible
-  model: ${KIMI_MODEL:-kimi-k2.5}
+  model: ${KIMI_MODEL:-kimi-k3}
   api_base: ${KIMI_API_BASE:-https://api.moonshot.cn/v1}
   api_key: ${KIMI_API_KEY}
   max_steps: 36
