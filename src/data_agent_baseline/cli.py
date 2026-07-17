@@ -16,6 +16,7 @@ from rich.table import Table
 
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
 from data_agent_baseline.config import load_app_config
+from data_agent_baseline.run.failure_mining import analyze_run_failures, write_failure_mining_outputs
 from data_agent_baseline.run.runner import TaskRunArtifacts, create_run_output_dir, run_benchmark, run_single_task
 from data_agent_baseline.tools.filesystem import list_context_tree
 
@@ -255,6 +256,27 @@ def run_benchmark_command(
     console.print(f"Run output: {run_output_dir}")
     console.print(f"Tasks attempted: {len(artifacts)}")
     console.print(f"Succeeded tasks: {sum(1 for item in artifacts if item.succeeded)}")
+
+
+@app.command("mine-failures")
+def mine_failures_command(
+    run_dir: Path = typer.Argument(..., exists=True, file_okay=False, help="Run output directory."),
+    score_threshold: float = typer.Option(1.0, min=0.0, max=1.0, help="Include tasks with score below this value."),
+    evaluation: Path | None = typer.Option(None, exists=True, dir_okay=False, help="Optional evaluation.json path."),
+    output_dir: Path | None = typer.Option(None, file_okay=False, help="Directory for failure_mining.json/md."),
+) -> None:
+    """Mine low-score tasks by score, route, task profile, and failure signals."""
+    result = analyze_run_failures(
+        run_dir=run_dir,
+        score_threshold=score_threshold,
+        evaluation_path=evaluation,
+    )
+    target_dir = output_dir or run_dir
+    json_path, md_path = write_failure_mining_outputs(result, target_dir)
+
+    console.print(f"Failure mining JSON: {json_path}")
+    console.print(f"Failure mining Markdown: {md_path}")
+    console.print(f"Low-score tasks: {result.summary['low_score_task_count']}")
 
 
 def main() -> None:

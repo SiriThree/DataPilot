@@ -273,6 +273,32 @@ missing predictions in the summary.
 For a full 50-task benchmark run, omit `--only-existing` if you want missing
 predictions to count as failures.
 
+## Mine Low-Score Failures
+
+After `evaluation.json` is written, mine low-score tasks by score, route,
+task profile, domain, repair action, and failure signal:
+
+```powershell
+python -m uv run dabench mine-failures artifacts/runs/<run_id>
+```
+
+This writes:
+
+```text
+artifacts/runs/<run_id>/failure_mining.json
+artifacts/runs/<run_id>/failure_mining.md
+```
+
+Use a stricter or looser threshold when needed:
+
+```powershell
+python -m uv run dabench mine-failures artifacts/runs/<run_id> --score-threshold 0.9
+```
+
+Read `failure_mining.md` first. It sorts the lowest-score tasks and groups them
+by `task_type`, `route`, `signal`, and domain so the next solver/verifier work
+can target recurring failure modes instead of one-off task ids.
+
 ## Stage 5 Benchmark Loop
 
 Use DeepSeek/OpenAI-compatible models for scoring experiments:
