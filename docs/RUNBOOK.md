@@ -336,6 +336,20 @@ Two concrete failures from the completed subset were fixed:
   emits event type + total value. Validated follow-up: score `1.0`, output
   `Meeting,175.39`.
 
+Reference-inspired shape contract update:
+
+- The external `KDDCupDataAgent-main` reference emphasizes extracting an answer
+  shape before submission. DataPilot now includes a lightweight no-extra-LLM
+  variant in `infer_output_contract`.
+- It conservatively infers expected column count and top-N row caps from the
+  question text, without enforcing exact header names.
+- Representative inferred shapes:
+  - `task_25`: 1 column
+  - `task_38`: 1 column
+  - `task_11`: 3 columns
+  - `task_163`: 2 columns
+  - `task_89`: 1 column
+
 ## PDF Support
 
 The agent can profile and read PDF files in task context directories.
@@ -409,7 +423,7 @@ python -m uv run --extra dev python -m pytest
 Expected result:
 
 ```text
-28 passed, 1 skipped
+32 passed, 1 skipped
 ```
 
 These default tests do not call the model API and do not require

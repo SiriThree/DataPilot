@@ -46,6 +46,7 @@ class VerificationCheck:
 @dataclass
 class OutputContract:
     expected_columns: list[str] = field(default_factory=list)
+    expected_column_count: int | None = None
     min_rows: int | None = None
     max_rows: int | None = None
     exact_columns: bool = True
@@ -135,6 +136,89 @@ def _extract_question_columns(question: str) -> list[str]:
     return []
 
 
+def _infer_question_column_count(question: str) -> int | None:
+    q = question.strip().lower()
+    if not q:
+        return None
+
+    if (
+        "type" in q
+        and "expense" in q
+        and any(term in q for term in ("total value", "total cost", "sum", "total"))
+    ):
+        return 2
+
+    # Explicit "A, B and C" list-style field requests.
+    field_patterns = [
+        r"\blist\s+(?:their\s+|the\s+)?(.+?)(?:\s+for\b|\s+of\b|\s+where\b|\s+that\b|[?.]?$)",
+        r"\bgive\s+(?:their\s+|the\s+)?(.+?)(?:\s+for\b|\s+of\b|\s+where\b|\s+that\b|[?.]?$)",
+        r"\breturn\s+(?:their\s+|the\s+)?(.+?)(?:\s+for\b|\s+of\b|\s+where\b|\s+that\b|[?.]?$)",
+        r"\bidentify\s+(?:the\s+)?(.+?)(?:\s+approved\b|\s+for\b|\s+of\b|\s+where\b|[?.]?$)",
+    ]
+    stop_terms = {
+        "all",
+        "the",
+        "their",
+        "a",
+        "an",
+        "in",
+        "with",
+        "who",
+        "that",
+        "which",
+        "what",
+    }
+    for pattern in field_patterns:
+        match = re.search(pattern, q)
+        if not match:
+            continue
+        phrase = match.group(1)
+        phrase = re.sub(r"\b(and\s+)?their\b", "", phrase).strip(" ,")
+        parts = [
+            part.strip(" ,")
+            for part in re.split(r"\s*,\s*|\s+and\s+|\s*&\s*", phrase)
+            if part.strip(" ,")
+        ]
+        parts = [part for part in parts if part not in stop_terms and len(part.split()) <= 6]
+        if len(parts) >= 2:
+            return len(parts)
+
+    # Single scalar or entity-field questions. These are intentionally broad but
+    # only produce a column-count contract, not a header-name contract.
+    single_field_patterns = (
+        r"\blist\s+all\s+(?:the\s+)?[^,?]+",
+        r"\bwhat(?:'s| is| was| were)?\s+the\s+[^?]+",
+        r"\bwhich\s+[^?]+",
+        r"\bhow many\b",
+        r"\bcount\b",
+        r"\baverage\b",
+        r"\bmean\b",
+        r"\bsum\b",
+        r"\btotal\b",
+    )
+    if any(re.search(pattern, q) for pattern in single_field_patterns):
+        return 1
+    return None
+
+
+def _infer_question_max_rows(question: str) -> int | None:
+    q = question.lower()
+    patterns = (
+        r"\btop\s+(\d+)\b",
+        r"\bbottom\s+(\d+)\b",
+        r"\bfirst\s+(\d+)\b",
+        r"\blast\s+(\d+)\b",
+        r"\b(\d+)\s+(?:largest|smallest|highest|lowest|oldest|youngest|most recent)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, q)
+        if match:
+            value = int(match.group(1))
+            if value > 0:
+                return value
+    return None
+
+
 def infer_output_contract(task_dir: Path) -> OutputContract | None:
     """Infer expected output shape from task.json."""
     task_json = task_dir / "task.json"
@@ -166,17 +250,31 @@ def infer_output_contract(task_dir: Path) -> OutputContract | None:
         if expected_columns:
             source = "task_json.question"
 
+    question = str(payload.get("question", ""))
+    expected_column_count = None
+    if expected_columns:
+        expected_column_count = len(expected_columns)
+    else:
+        expected_column_count = _infer_question_column_count(question)
+        if expected_column_count is not None and not source:
+            source = "task_json.question_shape"
+
     min_rows = payload.get("min_rows") or payload.get("expected_min_rows")
     max_rows = payload.get("max_rows") or payload.get("expected_max_rows")
     exact_columns = bool(payload.get("exact_columns", True))
 
     n_min = int(min_rows) if isinstance(min_rows, int) and min_rows >= 0 else None
     n_max = int(max_rows) if isinstance(max_rows, int) and max_rows >= 0 else None
+    inferred_max = _infer_question_max_rows(question)
+    if n_max is None and inferred_max is not None:
+        n_max = inferred_max
+        source = f"{source}+question_row_cap" if source else "task_json.question_row_cap"
 
-    if not expected_columns and n_min is None and n_max is None:
+    if not expected_columns and expected_column_count is None and n_min is None and n_max is None:
         return None
     return OutputContract(
         expected_columns=expected_columns,
+        expected_column_count=expected_column_count,
         min_rows=n_min,
         max_rows=n_max,
         exact_columns=exact_columns,
@@ -244,6 +342,16 @@ def _run_task_contract_check(rows: list[list[str]], contract: OutputContract | N
 
     header = [_normalize_column_name(c).lower() for c in rows[0]]
     data_rows = max(len(rows) - 1, 0)
+
+    if contract.expected_column_count is not None and len(header) != contract.expected_column_count:
+        return _check(
+            "task_contract_check",
+            False,
+            (
+                f"expected {contract.expected_column_count} column(s) from {contract.source}, "
+                f"got {len(header)}"
+            ),
+        )
 
     if contract.expected_columns:
         expected = [_normalize_column_name(c).lower() for c in contract.expected_columns]
@@ -353,6 +461,7 @@ def verification_report_to_dict(report: VerificationReport) -> dict[str, Any]:
         "checks": [{"name": c.name, "passed": c.passed, "detail": c.detail} for c in report.checks],
         "output_contract": {
             "expected_columns": report.output_contract.expected_columns,
+            "expected_column_count": report.output_contract.expected_column_count,
             "min_rows": report.output_contract.min_rows,
             "max_rows": report.output_contract.max_rows,
             "source": report.output_contract.source,
