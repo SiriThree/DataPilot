@@ -1,0 +1,13 @@
+data/
+artifacts/
+.evaluation/
+.git/
+.claude/
+__pycache__/
+.venv/
+*.pyc
+.DS_Store
+configs/
+!configs/react_baseline.example.yaml
+tests/
+docs/
