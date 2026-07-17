@@ -14,11 +14,13 @@ class FailureMiningResult:
     summary: dict[str, Any]
     tasks: list[dict[str, Any]]
     groups: dict[str, Any]
+    recommendations: list[dict[str, Any]]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "summary": self.summary,
             "groups": self.groups,
+            "recommendations": self.recommendations,
             "tasks": self.tasks,
         }
 
@@ -181,6 +183,123 @@ def _tasks_by(rows: list[dict[str, Any]], key: str) -> dict[str, list[str]]:
     return {key: value for key, value in sorted(grouped.items())}
 
 
+RECOMMENDATION_RULES: dict[str, dict[str, str]] = {
+    "threshold_grounding_risk": {
+        "area": "threshold verifier / solver",
+        "action": (
+            "Strengthen threshold grounding: extract explicit range rules, preserve population joins, "
+            "and compare entity-level versus same-row counts."
+        ),
+    },
+    "population_filter_semantic_risk": {
+        "area": "population filter verifier",
+        "action": (
+            "Add population-scope checks before aggregation so the model does not add extra null, "
+            "positive-value, or joined-subset filters."
+        ),
+    },
+    "target_field_semantic_risk": {
+        "area": "target-field verifier / repair",
+        "action": "Verify the requested output field and repair nearby-id/evidence-column answers.",
+    },
+    "output_shape_semantic_risk": {
+        "area": "output contract repair",
+        "action": "Infer requested columns from wording and prevent packed multi-value scalar cells.",
+    },
+    "scalar_format_semantic_risk": {
+        "area": "scalar format repair",
+        "action": "Normalize percent signs, delimiters, and single-cell scalar formatting.",
+    },
+    "rank_semantics_risk": {
+        "area": "rank/order solver",
+        "action": "Disambiguate rank columns from derived sorting and verify requested rank direction.",
+    },
+    "denominator_risk": {
+        "area": "ratio verifier",
+        "action": "Require explicit numerator and denominator commitments before final ratio answers.",
+    },
+    "numeric_grounding_error": {
+        "area": "numeric evidence verifier",
+        "action": "Require a concrete formula/query and observed numeric evidence for numeric questions.",
+    },
+    "budget_exhaustion": {
+        "area": "routing / budget control",
+        "action": "Improve route-specific early exit and retry budgets for tasks that run out of steps.",
+    },
+    "no_grounded_answer": {
+        "area": "answer fallback",
+        "action": "Add a best-grounded fallback path so retries submit a compact answer instead of empty output.",
+    },
+}
+
+
+TASK_TYPE_RECOMMENDATIONS: dict[str, dict[str, str]] = {
+    "threshold_count": {
+        "area": "threshold-count solver",
+        "action": "Build a reusable solver for population extraction, threshold grounding, and distinct entity counts.",
+    },
+    "rank_lookup": {
+        "area": "rank lookup solver",
+        "action": "Build schema-driven rank lookup helpers for rank/order/position fields and attached values.",
+    },
+    "ratio_or_percentage": {
+        "area": "ratio solver",
+        "action": "Add a ratio planner that logs numerator, denominator, unit, and final output format.",
+    },
+    "aggregation": {
+        "area": "aggregation verifier",
+        "action": "Verify aggregation operator, grouping grain, time normalization, and units before answering.",
+    },
+}
+
+
+def _score_loss(row: dict[str, Any]) -> float:
+    score = row.get("score")
+    if isinstance(score, (int, float)):
+        return max(0.0, 1.0 - float(score))
+    return 0.0
+
+
+def _build_recommendations(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+
+    def add(kind: str, key: str, row: dict[str, Any], rule: dict[str, str]) -> None:
+        bucket_key = f"{kind}:{key}"
+        bucket = buckets.setdefault(
+            bucket_key,
+            {
+                "kind": kind,
+                "key": key,
+                "area": rule["area"],
+                "action": rule["action"],
+                "task_ids": [],
+                "total_score_loss": 0.0,
+            },
+        )
+        bucket["task_ids"].append(str(row["task_id"]))
+        bucket["total_score_loss"] += _score_loss(row)
+
+    for row in rows:
+        for signal in row.get("signals") or []:
+            rule = RECOMMENDATION_RULES.get(str(signal))
+            if rule:
+                add("signal", str(signal), row, rule)
+
+        task_type = str(row.get("task_type") or "")
+        rule = TASK_TYPE_RECOMMENDATIONS.get(task_type)
+        if rule:
+            add("task_type", task_type, row, rule)
+
+    recommendations = list(buckets.values())
+    for item in recommendations:
+        item["task_ids"] = sorted(set(item["task_ids"]), key=lambda value: (len(value), value))
+        item["task_count"] = len(item["task_ids"])
+        item["total_score_loss"] = round(float(item["total_score_loss"]), 4)
+        item["priority"] = round(item["task_count"] * 10 + float(item["total_score_loss"]) * 5, 4)
+    recommendations.sort(key=lambda item: (-float(item["priority"]), str(item["kind"]), str(item["key"])))
+    return recommendations
+
+
 def analyze_run_failures(
     *,
     run_dir: Path,
@@ -218,7 +337,12 @@ def analyze_run_failures(
         "task_count_seen": len(rows),
         "low_score_task_count": len(low_score_rows),
     }
-    return FailureMiningResult(summary=summary, tasks=low_score_rows, groups=groups)
+    return FailureMiningResult(
+        summary=summary,
+        tasks=low_score_rows,
+        groups=groups,
+        recommendations=_build_recommendations(low_score_rows),
+    )
 
 
 def write_failure_mining_outputs(result: FailureMiningResult, output_dir: Path) -> tuple[Path, Path]:
@@ -261,6 +385,21 @@ def render_failure_mining_markdown(result: FailureMiningResult) -> str:
         lines.append(f"### {label}")
         for name, count in values.items():
             lines.append(f"- `{name}`: {count}")
+        lines.append("")
+
+    if result.recommendations:
+        lines.extend(["## Development Recommendations", ""])
+        lines.append("| Priority | Area | Trigger | Tasks | Suggested Action |")
+        lines.append("| ---: | --- | --- | --- | --- |")
+        for item in result.recommendations[:12]:
+            task_ids = ", ".join(f"`{task_id}`" for task_id in item.get("task_ids", [])[:8])
+            if item.get("task_count", 0) > 8:
+                task_ids += ", ..."
+            lines.append(
+                f"| {item.get('priority')} | {item.get('area')} | "
+                f"{item.get('kind')}:{item.get('key')} | {task_ids or '-'} | "
+                f"{item.get('action')} |"
+            )
         lines.append("")
 
     lines.extend(["## Lowest-Score Tasks", ""])

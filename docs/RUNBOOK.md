@@ -297,7 +297,9 @@ python -m uv run dabench mine-failures artifacts/runs/<run_id> --score-threshold
 
 Read `failure_mining.md` first. It sorts the lowest-score tasks and groups them
 by `task_type`, `route`, `signal`, and domain so the next solver/verifier work
-can target recurring failure modes instead of one-off task ids.
+can target recurring failure modes instead of one-off task ids. The
+`Development Recommendations` section converts recurring signals and task types
+into a prioritized implementation queue.
 
 ## Stage 5 Benchmark Loop
 

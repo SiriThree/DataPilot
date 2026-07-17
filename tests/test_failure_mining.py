@@ -90,11 +90,17 @@ def test_failure_mining_groups_low_score_tasks(tmp_path: Path) -> None:
     assert result.groups["by_task_type"] == {"threshold_count": 1}
     assert result.groups["by_signal"] == {"threshold_grounding_risk": 1}
     assert result.groups["by_domain"] == {"medical_patient": 1}
+    assert result.recommendations
+    assert result.recommendations[0]["task_ids"] == ["task_10"]
+    assert any(item["key"] == "threshold_count" for item in result.recommendations)
+    assert any(item["key"] == "threshold_grounding_risk" for item in result.recommendations)
 
     markdown = render_failure_mining_markdown(result)
     assert "task_10" in markdown
     assert "threshold_count" in markdown
     assert "fix_patient_threshold_count" in markdown
+    assert "Development Recommendations" in markdown
+    assert "threshold-count solver" in markdown
 
     json_path, md_path = write_failure_mining_outputs(result, run_dir)
     assert json_path.exists()
