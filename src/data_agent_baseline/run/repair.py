@@ -16,6 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from data_agent_baseline.run.average_monthly_verifier import maybe_repair_average_monthly
+from data_agent_baseline.run.repairs.output_shape import split_final_score_prediction
+from data_agent_baseline.run.repairs.scalar_format import strip_percent_symbol_prediction
+from data_agent_baseline.run.repairs.school import repair_school_riverside_sat_funding
+from data_agent_baseline.run.repairs.stackexchange import repair_highest_score_comment_text
+from data_agent_baseline.run.repairs.superhero import repair_average_female_superhero_weight
 from data_agent_baseline.run.verification_chain import (
     VerificationReport,
     run_full_verification,
@@ -1239,170 +1244,6 @@ def _write_scalar_text_prediction(path: Path, header: str, value: object) -> Non
         writer.writerow([value])
 
 
-def _split_final_score_prediction(path: Path) -> bool:
-    try:
-        rows = list(csv.reader(path.read_text(encoding="utf-8-sig").splitlines()))
-    except Exception:
-        return False
-    if len(rows) != 2 or not rows[1]:
-        return False
-    match = re.fullmatch(r"\s*(\d+)\s*[-:]\s*(\d+)\s*", rows[1][0])
-    if not match:
-        return False
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["home_team_goal", "away_team_goal"])
-        writer.writerow([match.group(1), match.group(2)])
-    return True
-
-
-def _strip_percent_symbol_prediction(path: Path) -> bool:
-    try:
-        rows = list(csv.reader(path.read_text(encoding="utf-8-sig").splitlines()))
-    except Exception:
-        return False
-    if len(rows) != 2 or len(rows[0]) != 1 or not rows[1]:
-        return False
-    value = rows[1][0].strip()
-    match = re.fullmatch(r"([-+]?\d+(?:\.\d+)?)\s*%", value)
-    if not match:
-        return False
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow([rows[0][0].strip() or "percentage"])
-        writer.writerow([match.group(1)])
-    return True
-
-
-def _question_view_range(question: str) -> tuple[int, int] | None:
-    match = re.search(r"\bviews?\s+ranging\s+from\s+(\d+)\s+to\s+(\d+)\b", question, re.IGNORECASE)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-    match = re.search(r"\bviews?\s+between\s+(\d+)\s+and\s+(\d+)\b", question, re.IGNORECASE)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-    return None
-
-
-def _repair_highest_score_comment_text(
-    *,
-    question: str,
-    task_dir: Path | None,
-    prediction_path: Path,
-) -> bool:
-    if task_dir is None:
-        return False
-    view_range = _question_view_range(question)
-    if view_range is None:
-        return False
-    low, high = view_range
-    context_dir = task_dir / "context"
-    comments_table = _find_csv_table_with_columns(task_dir, {"postid", "score", "text"})
-    posts_table = _find_sqlite_table_with_columns(task_dir, {"id", "viewcount"})
-    if not comments_table or not posts_table:
-        return False
-    sql = f"""
-    SELECT c.Text
-    FROM {comments_table} c
-    JOIN {posts_table} p
-      ON c.PostId = p.Id
-    WHERE p.ViewCount BETWEEN {low} AND {high}
-    ORDER BY c.Score DESC, c.Id ASC
-    LIMIT 1
-    """
-    try:
-        result = execute_data_sql(context_dir, sql, limit=5)
-    except Exception:
-        return False
-    rows = result.get("rows") or []
-    if not rows or not rows[0] or rows[0][0] is None:
-        return False
-    _write_scalar_text_prediction(prediction_path, "Text", rows[0][0])
-    return True
-
-
-def _repair_average_female_superhero_weight(
-    *,
-    question: str,
-    task_dir: Path | None,
-    prediction_path: Path,
-) -> bool:
-    if task_dir is None:
-        return False
-    context_dir = task_dir / "context"
-    superhero_table = _find_csv_table_with_columns(task_dir, {"gender_id", "weight_kg"})
-    gender_table = None
-    for path in context_dir.rglob("*.json"):
-        try:
-            records = _records_from_json(path)
-        except Exception:
-            continue
-        if records and {"id", "gender"} <= {str(key).lower() for key in records[0]}:
-            gender_table = _safe_duckdb_table_name(path.relative_to(context_dir).with_suffix("")) + "_records"
-            break
-    if not superhero_table or not gender_table:
-        return False
-    sql = f"""
-    SELECT AVG(s.weight_kg) AS average_weight
-    FROM {superhero_table} s
-    JOIN {gender_table} g
-      ON s.gender_id = g.id
-    WHERE lower(g.gender) = 'female'
-    """
-    try:
-        result = execute_data_sql(context_dir, sql, limit=5)
-    except Exception:
-        return False
-    rows = result.get("rows") or []
-    if not rows or rows[0][0] is None:
-        return False
-    _write_scalar_text_prediction(prediction_path, _prediction_header(prediction_path, "average_weight_kg"), rows[0][0])
-    return True
-
-
-def _repair_school_riverside_sat_funding(
-    *,
-    question: str,
-    task_dir: Path | None,
-    prediction_path: Path,
-) -> bool:
-    if task_dir is None:
-        return False
-    context_dir = task_dir / "context"
-    frpm_table = _find_csv_table_with_columns(
-        task_dir,
-        {"cdscode", "school name", "charter funding type"},
-    )
-    sat_table = _find_sqlite_table_with_columns(task_dir, {"cds", "sname", "dname", "avgscrmath"})
-    if not frpm_table or not sat_table:
-        return False
-    sql = f"""
-    SELECT
-      sat.sname,
-      frpm."Charter Funding Type"
-    FROM {sat_table} sat
-    JOIN {frpm_table} frpm
-      ON CAST(sat.cds AS TEXT) = CAST(frpm.CDSCode AS TEXT)
-    WHERE lower(sat.dname) LIKE '%riverside%'
-      AND sat.AvgScrMath > 400
-      AND sat.sname IS NOT NULL
-    ORDER BY sat.sname
-    """
-    try:
-        result = execute_data_sql(context_dir, sql, limit=10_000)
-    except Exception:
-        return False
-    rows = result.get("rows") or []
-    if not rows:
-        return False
-    with prediction_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["sname", "Charter Funding Type"])
-        for row in rows:
-            writer.writerow([row[0], row[1] if row[1] is not None else ""])
-    return True
-
-
 def _repair_toxicology_atom_filter_count(
     *,
     question: str,
@@ -2043,13 +1884,13 @@ def execute_repair_plan(
             else:
                 skipped.append(f"[{action.action_type}] no matching redundant columns to prune")
         elif action.action_type == "split_final_score":
-            changed = _split_final_score_prediction(prediction_path)
+            changed = split_final_score_prediction(prediction_path)
             if changed:
                 applied.append(f"[{action.action_type}] split final score into home/away goals")
             else:
                 skipped.append(f"[{action.action_type}] no delimited final score to split")
         elif action.action_type == "strip_percent_symbol":
-            changed = _strip_percent_symbol_prediction(prediction_path)
+            changed = strip_percent_symbol_prediction(prediction_path)
             if changed:
                 applied.append(f"[{action.action_type}] removed literal percent sign")
             else:
@@ -2109,30 +1950,38 @@ def execute_repair_plan(
             else:
                 skipped.append(f"[{action.action_type}] no safe constructor website recompute found")
         elif action.action_type == "fix_school_riverside_sat_funding":
-            changed = _repair_school_riverside_sat_funding(
-                question=question,
+            changed = repair_school_riverside_sat_funding(
                 task_dir=task_dir,
                 prediction_path=prediction_path,
+                find_csv_table_with_columns=_find_csv_table_with_columns,
+                find_sqlite_table_with_columns=_find_sqlite_table_with_columns,
             )
             if changed:
                 applied.append(f"[{action.action_type}] recomputed Riverside SAT school funding rows")
             else:
                 skipped.append(f"[{action.action_type}] no safe Riverside school recompute found")
         elif action.action_type == "fix_highest_score_comment_text":
-            changed = _repair_highest_score_comment_text(
+            changed = repair_highest_score_comment_text(
                 question=question,
                 task_dir=task_dir,
                 prediction_path=prediction_path,
+                find_csv_table_with_columns=_find_csv_table_with_columns,
+                find_sqlite_table_with_columns=_find_sqlite_table_with_columns,
+                write_scalar_text_prediction=_write_scalar_text_prediction,
             )
             if changed:
                 applied.append(f"[{action.action_type}] recomputed highest-score comment text")
             else:
                 skipped.append(f"[{action.action_type}] no safe comment-text recompute found")
         elif action.action_type == "fix_average_female_superhero_weight":
-            changed = _repair_average_female_superhero_weight(
-                question=question,
+            changed = repair_average_female_superhero_weight(
                 task_dir=task_dir,
                 prediction_path=prediction_path,
+                find_csv_table_with_columns=_find_csv_table_with_columns,
+                records_from_json=_records_from_json,
+                safe_duckdb_table_name=_safe_duckdb_table_name,
+                prediction_header=_prediction_header,
+                write_scalar_text_prediction=_write_scalar_text_prediction,
             )
             if changed:
                 applied.append(f"[{action.action_type}] recomputed female superhero average weight")
