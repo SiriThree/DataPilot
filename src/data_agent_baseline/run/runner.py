@@ -41,6 +41,8 @@ from data_agent_baseline.tools.registry import ToolRegistry, create_default_tool
 from data_agent_baseline.tools.stateful_python import remove_interpreter
 from data_agent_baseline.tools.verifier import verify_answer
 
+VALID_DIFFICULTIES = {"easy", "medium", "hard", "extreme"}
+
 
 @dataclass(frozen=True, slots=True)
 class TaskRunArtifacts:
@@ -75,6 +77,18 @@ def resolve_run_id(run_id: str | None = None) -> str:
         raise ValueError("run_id must not be empty.")
     if normalized in {".", ".."} or "/" in normalized or "\\" in normalized:
         raise ValueError("run_id must be a single directory name, not a path.")
+    return normalized
+
+
+def normalize_difficulty_filter(difficulty: str | None) -> str | None:
+    if difficulty is None:
+        return None
+    normalized = difficulty.strip().lower()
+    if not normalized:
+        return None
+    if normalized not in VALID_DIFFICULTIES:
+        allowed = ", ".join(sorted(VALID_DIFFICULTIES))
+        raise ValueError(f"difficulty must be one of: {allowed}")
     return normalized
 
 
@@ -703,12 +717,14 @@ def run_benchmark(
     model=None,
     tools: ToolRegistry | None = None,
     limit: int | None = None,
+    difficulty: str | None = None,
     progress_callback: Callable[[TaskRunArtifacts], None] | None = None,
 ) -> tuple[Path, list[TaskRunArtifacts]]:
     effective_run_id, run_output_dir = create_run_output_dir(config.run.output_dir, run_id=config.run.run_id)
 
     dataset = DABenchPublicDataset(config.dataset.root_path)
-    tasks = dataset.iter_tasks()
+    difficulty_filter = normalize_difficulty_filter(difficulty)
+    tasks = dataset.iter_tasks(difficulty=difficulty_filter)
     if limit is not None:
         tasks = tasks[:limit]
 
@@ -762,6 +778,7 @@ def run_benchmark(
             "run_id": effective_run_id,
             "task_count": len(task_artifacts),
             "succeeded_task_count": sum(1 for artifact in task_artifacts if artifact.succeeded),
+            "difficulty_filter": difficulty_filter,
             "max_workers": effective_workers,
             "tasks": [artifact.to_dict() for artifact in task_artifacts],
         },

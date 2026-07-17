@@ -17,7 +17,13 @@ from rich.table import Table
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
 from data_agent_baseline.config import load_app_config
 from data_agent_baseline.run.failure_mining import analyze_run_failures, write_failure_mining_outputs
-from data_agent_baseline.run.runner import TaskRunArtifacts, create_run_output_dir, run_benchmark, run_single_task
+from data_agent_baseline.run.runner import (
+    TaskRunArtifacts,
+    create_run_output_dir,
+    normalize_difficulty_filter,
+    run_benchmark,
+    run_single_task,
+)
 from data_agent_baseline.tools.filesystem import list_context_tree
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -158,11 +164,19 @@ def run_task_command(
 def run_benchmark_command(
     config: Path = typer.Option(..., exists=True, dir_okay=False, help="YAML config path."),
     limit: int | None = typer.Option(None, min=1, help="Maximum number of tasks to run."),
+    difficulty: str | None = typer.Option(
+        None,
+        help="Only run tasks with this difficulty: easy, medium, hard, or extreme.",
+    ),
 ) -> None:
     """Run the ReAct baseline on multiple tasks from the config selection."""
     app_config = load_app_config(config)
     dataset = DABenchPublicDataset(app_config.dataset.root_path)
-    task_total = len(dataset.iter_tasks())
+    try:
+        difficulty_filter = normalize_difficulty_filter(difficulty)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="difficulty") from exc
+    task_total = len(dataset.iter_tasks(difficulty=difficulty_filter))
     if limit is not None:
         task_total = min(task_total, limit)
     effective_workers = app_config.run.max_workers
@@ -234,6 +248,7 @@ def run_benchmark_command(
             run_output_dir, artifacts = run_benchmark(
                 config=app_config,
                 limit=limit,
+                difficulty=difficulty_filter,
                 progress_callback=on_task_complete,
             )
         except (ValueError, FileExistsError) as exc:
@@ -254,6 +269,8 @@ def run_benchmark_command(
             ),
         )
     console.print(f"Run output: {run_output_dir}")
+    if difficulty_filter:
+        console.print(f"Difficulty filter: {difficulty_filter}")
     console.print(f"Tasks attempted: {len(artifacts)}")
     console.print(f"Succeeded tasks: {sum(1 for item in artifacts if item.succeeded)}")
 

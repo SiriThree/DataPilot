@@ -231,6 +231,18 @@ python -m uv run dabench run-task task_1 --config configs/react_baseline.local.y
 python -m uv run dabench run-benchmark --config configs/react_baseline.local.yaml --limit 20
 ```
 
+按难度定向 benchmark：
+
+```powershell
+python -m uv run dabench run-benchmark --config configs/react_baseline.local.yaml --difficulty easy
+```
+
+也可以组合难度过滤和数量限制：
+
+```powershell
+python -m uv run dabench run-benchmark --config configs/react_baseline.local.yaml --difficulty hard --limit 5
+```
+
 全量 benchmark：
 
 ```powershell
