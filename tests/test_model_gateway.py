@@ -78,9 +78,6 @@ def test_three_provider_configs_load_defaults(monkeypatch: pytest.MonkeyPatch) -
         "KIMI_API_KEY",
         "KIMI_MODEL",
         "KIMI_API_BASE",
-        "MIMO_API_KEY",
-        "MIMO_MODEL",
-        "MIMO_API_BASE",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -91,7 +88,6 @@ def test_three_provider_configs_load_defaults(monkeypatch: pytest.MonkeyPatch) -
             "https://dashscope.aliyuncs.com/compatible-mode/v1",
         ),
         "react_baseline.kimi.example.yaml": ("kimi-k2.5", "https://api.moonshot.cn/v1"),
-        "react_baseline.mimo.example.yaml": ("mimo-v2.5-pro", "https://api.xiaomimimo.com/v1"),
     }
     for filename, (model, api_base) in expected.items():
         config = load_app_config(project_root / "configs" / filename)

@@ -46,7 +46,6 @@ configs/*
 !configs/react_baseline.ollama.fast.yaml
 !configs/react_baseline.qwen.example.yaml
 !configs/react_baseline.kimi.example.yaml
-!configs/react_baseline.mimo.example.yaml
 
 # OS / notebook noise
 .DS_Store

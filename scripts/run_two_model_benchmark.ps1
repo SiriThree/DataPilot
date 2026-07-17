@@ -8,8 +8,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $configs = @(
     @{ Name = "qwen"; Config = "configs/react_baseline.qwen.example.yaml" },
-    @{ Name = "kimi"; Config = "configs/react_baseline.kimi.example.yaml" },
-    @{ Name = "mimo"; Config = "configs/react_baseline.mimo.example.yaml" }
+    @{ Name = "kimi"; Config = "configs/react_baseline.kimi.example.yaml" }
 )
 
 function New-BenchmarkArgs {
