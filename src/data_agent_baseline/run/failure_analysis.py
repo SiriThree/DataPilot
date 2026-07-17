@@ -239,6 +239,12 @@ def _build_evolution_notes(signals: list[FailureSignal]) -> list[str]:
         notes.append("Add threshold grounding evidence: locate context rules first, then compare explicit data-derived candidate cutoffs instead of using outside defaults.")
     if "output_shape_semantic_risk" in codes:
         notes.append("Add output-shape contract inference from requested fields and prevent packing multiple requested fields into one cell.")
+    if "target_field_semantic_risk" in codes:
+        notes.append("Add target-field verification so answers return the requested field (for example Text/URL/name) instead of nearby ids or evidence fields.")
+    if "scalar_format_semantic_risk" in codes:
+        notes.append("Normalize scalar answer formatting, especially percent signs and delimited values that evaluators expect as plain cells.")
+    if "population_filter_semantic_risk" in codes:
+        notes.append("Verify population scope before aggregation; avoid extra null/positive-value filtering when the question asks for all records.")
     if not notes:
         notes.append("No new evolution action suggested by deterministic taxonomy.")
     return notes

@@ -18,6 +18,9 @@ SEMANTIC_RISK_CODES = {
     "numeric_grounding_error",
     "threshold_grounding_risk",
     "output_shape_semantic_risk",
+    "target_field_semantic_risk",
+    "scalar_format_semantic_risk",
+    "population_filter_semantic_risk",
 }
 
 RETRY_TRIGGER_CODES = SEMANTIC_RISK_CODES | {

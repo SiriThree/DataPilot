@@ -84,7 +84,7 @@ def test_three_provider_configs_load_defaults(monkeypatch: pytest.MonkeyPatch) -
     project_root = Path(__file__).resolve().parents[1]
     expected = {
         "react_baseline.qwen.example.yaml": (
-            "qwen-max",
+            "qwen3.7-max",
             "https://dashscope.aliyuncs.com/compatible-mode/v1",
         ),
         "react_baseline.kimi.example.yaml": ("kimi-k3", "https://api.moonshot.cn/v1"),

@@ -33,6 +33,7 @@ DOCUMENT_RE = re.compile(
 FIELD_ATTACHMENT_RE = re.compile(r"\b(type|category|status|approved|valid|confirmed)\b", re.IGNORECASE)
 VALUE_METRIC_RE = re.compile(r"\b(total|value|cost|expense|amount|score|views|consumption)\b", re.IGNORECASE)
 DELIMITED_CELL_RE = re.compile(r"^\s*[^,]+(?:-|/|:)[^,]+\s*$")
+URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +251,39 @@ def _prediction_shape(rows: list[list[str]]) -> tuple[int, int, list[str], list[
     return len(header), len(data_rows), header, data_rows
 
 
+def _header_has(header: list[str], terms: tuple[str, ...]) -> bool:
+    lower = [column.lower() for column in header]
+    return any(any(term in column for term in terms) for column in lower)
+
+
+def _flat_prediction_values(data_rows: list[list[str]]) -> list[str]:
+    return [cell.strip() for row in data_rows for cell in row if cell.strip()]
+
+
+def _question_requests_comment_text(question: str) -> bool:
+    q = question.lower()
+    return "comment" in q and not re.search(r"\bcomment\s+id\b|\bid\s+of\s+the\s+comment\b", q)
+
+
+def _question_requests_url(question: str) -> bool:
+    q = question.lower()
+    return any(term in q for term in ("website", "web site", "url", "link"))
+
+
+def _question_requests_final_score_split(question: str) -> bool:
+    q = question.lower()
+    return "final score" in q and ("home" in q or "away" in q or "between" in q)
+
+
+def _question_requests_plain_percentage(question: str) -> bool:
+    q = question.lower()
+    return any(term in q for term in ("percentage", "percent", "how much faster", "how much slower"))
+
+
+def _question_requests_all_population(question: str) -> bool:
+    return bool(re.search(r"\ball\b", question, flags=re.IGNORECASE))
+
+
 def _has_external_threshold_language(evidence: str) -> bool:
     return any(term in evidence for term in ("standard", "common", "typical", "usually", "normal range is"))
 
@@ -262,7 +296,8 @@ def verify_semantic_contract(
 ) -> SemanticVerificationReport:
     contract = infer_semantic_contract(question)
     rows = _read_prediction_rows(prediction_path)
-    width, data_row_count, _header, data_rows = _prediction_shape(rows)
+    width, data_row_count, header, data_rows = _prediction_shape(rows)
+    flat_values = _flat_prediction_values(data_rows)
     evidence = _trace_text(run_result)
     checks: list[SemanticCheck] = [
         SemanticCheck(
@@ -354,6 +389,51 @@ def verify_semantic_contract(
             "warning",
             "single delimited score/result cell may need separate output columns",
         ))
+
+    if _question_requests_comment_text(question):
+        has_text_output = _header_has(header, ("text", "comment"))
+        has_id_only_output = width == 1 and _header_has(header, ("id",)) and not has_text_output
+        selected_id_in_trace = re.search(r"\bselect\s+(?:c\.)?id\b", evidence) is not None and "text" not in evidence
+        if has_id_only_output or selected_id_in_trace:
+            checks.append(SemanticCheck(
+                "target_field_semantic_risk",
+                "warning",
+                "question asks for comment content but prediction appears to return an id field",
+            ))
+
+    if _question_requests_url(question):
+        has_url_column = _header_has(header, ("url", "website", "web site", "link"))
+        has_url_value = any(URL_RE.search(value) for value in flat_values)
+        if not has_url_column and not has_url_value:
+            checks.append(SemanticCheck(
+                "target_field_semantic_risk",
+                "warning",
+                "question asks for website/url/link but prediction has no url-like column or value",
+            ))
+
+    if _question_requests_final_score_split(question) and width == 1:
+        if data_rows and any(DELIMITED_CELL_RE.match(row[0]) for row in data_rows if row):
+            checks.append(SemanticCheck(
+                "target_field_semantic_risk",
+                "warning",
+                "final score for home/away teams is packed into one delimited column",
+            ))
+
+    if _question_requests_plain_percentage(question):
+        if any(value.endswith("%") for value in flat_values):
+            checks.append(SemanticCheck(
+                "scalar_format_semantic_risk",
+                "warning",
+                "percentage answer includes a literal percent sign; evaluator expects numeric cell values",
+            ))
+
+    if contract.aggregation == "average" and _question_requests_all_population(question):
+        if any(term in evidence for term in ("> 0", ">0", "dropna", "notnull", "is not null")):
+            checks.append(SemanticCheck(
+                "population_filter_semantic_risk",
+                "warning",
+                "question asks for all records but trace applies a non-null or positive-value filter before averaging",
+            ))
 
     if "field_attachment_risk" in contract.risk_codes:
         singular_without_group = not GROUPING_RE.search(question)
