@@ -238,10 +238,75 @@ def _risk_protocol_lines(trigger_set: set[str]) -> list[str]:
     return lines
 
 
+def _task_profile(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    profile = payload.get("task_profile")
+    return profile if isinstance(profile, dict) else {}
+
+
+def _profile_protocol_lines(profile: dict[str, Any]) -> list[str]:
+    task_type = str(profile.get("task_type") or "").strip()
+    operation = str(profile.get("operation") or "").strip()
+    output_shape = str(profile.get("output_shape") or "").strip()
+    domains = [str(item) for item in profile.get("domains", []) if str(item).strip()]
+    flags = [str(item) for item in profile.get("flags", []) if str(item).strip()]
+
+    if not task_type:
+        return []
+
+    lines = [
+        "Task-profile retry protocol:",
+        f"- Classified task type: {task_type}; operation: {operation or 'unknown'}; output: {output_shape or 'unknown'}.",
+    ]
+    if domains:
+        lines.append(f"- Detected domain(s): {', '.join(domains)}.")
+
+    if task_type in {"count", "threshold_count"}:
+        lines.extend([
+            "- Define the counted entity before computing: row count, distinct entity count, or grouped result.",
+            "- Write the population filter, measurement filter, and exclusion filter as separate checks.",
+            "- Inspect a compact sample of included and excluded records before answering.",
+        ])
+    if task_type == "threshold_count":
+        lines.extend([
+            "- Ground every threshold/range from task context before using it.",
+            "- If the threshold depends on sex, age, category, or document-defined groups, join that population source explicitly.",
+        ])
+    if task_type == "aggregation":
+        lines.extend([
+            "- Preserve the requested aggregate operator exactly before doing unit conversion or normalization.",
+            "- Verify whether the aggregation is over rows, entities, months, years, or groups.",
+        ])
+    if task_type == "ratio_or_percentage":
+        lines.extend([
+            "- Compute numerator and denominator separately and show both in an intermediate result.",
+            "- Match the requested output format: raw ratio, percentage number, or percent string.",
+        ])
+    if task_type == "rank_lookup":
+        lines.extend([
+            "- Do not infer rank by sorting until you have checked whether a rank/order/position column already exists.",
+            "- Verify rank direction, tie handling, and whether the requested value is the ranked entity or an attached field.",
+        ])
+    if task_type in {"lookup", "document_table_lookup"}:
+        lines.extend([
+            "- Verify the target entity first, then retrieve only the requested field(s).",
+            "- Keep separate requested fields in separate CSV columns.",
+        ])
+    if "doc_table_grounding" in flags:
+        lines.extend([
+            "- Extract document rules or entity definitions before applying table filters.",
+            "- Do not let table column names override a stricter document definition.",
+        ])
+
+    return lines
+
+
 def build_guided_retry_decision(
     *,
     original_trace: dict[str, Any],
     prediction_path: Path | None,
+    route_decision_payload: dict[str, Any] | None = None,
 ) -> GuidedRetryDecision:
     trigger_codes = _retry_trigger_codes(original_trace)
     if not trigger_codes:
@@ -283,6 +348,10 @@ def build_guided_retry_decision(
     if details:
         parts.append("Failure/risk details:")
         parts.extend(f"- {detail}" for detail in details[:8])
+
+    profile_lines = _profile_protocol_lines(_task_profile(route_decision_payload))
+    if profile_lines:
+        parts.extend(profile_lines)
 
     if "budget_exhaustion" in trigger_set or "no_grounded_answer" in trigger_set:
         parts.extend([

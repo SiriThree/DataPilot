@@ -440,6 +440,7 @@ def _maybe_run_guided_retry(
     decision = build_guided_retry_decision(
         original_trace=original_trace,
         prediction_path=artifact.prediction_csv_path,
+        route_decision_payload=route_decision_payload,
     )
     original_trace["_guided_retry"] = {
         "decision": guided_retry_decision_to_dict(decision),
