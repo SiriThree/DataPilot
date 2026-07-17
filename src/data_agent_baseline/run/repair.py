@@ -155,6 +155,14 @@ def _check_semantic_intent(
             blocking=False,
         ))
 
+    if _looks_like_constructor_reference_website_question(question) and task_dir is not None:
+        actions.append(RepairAction(
+            priority=13,
+            action_type="fix_constructor_reference_website",
+            detail="Recompute winning constructor reference name and website from race/results/constructors context",
+            blocking=False,
+        ))
+
     if _looks_like_budget_times_ratio_question(question) and task_dir is not None:
         actions.append(RepairAction(
             priority=13,
@@ -168,6 +176,15 @@ def _check_semantic_intent(
             priority=13,
             action_type="fix_toxicology_atom_filter_count",
             detail="Count the filtered atoms in matching molecules, not all atoms in the molecules",
+            blocking=False,
+        ))
+
+    keep_tally_column = _tally_category_keep_column(question, original_header)
+    if keep_tally_column is not None:
+        actions.append(RepairAction(
+            priority=14,
+            action_type="prune_redundant_columns",
+            detail=f"Question asks for tallied categories; keep_column={keep_tally_column}",
             blocking=False,
         ))
 
@@ -217,6 +234,16 @@ def _looks_like_unit_price_consumption_status_question(question: str) -> bool:
         and "product" in q
         and "consumption status" in q
         and any(term in q for term in ("paid more than", "more than", "greater than"))
+    )
+
+
+def _looks_like_constructor_reference_website_question(question: str) -> bool:
+    q = question.lower()
+    return (
+        "constructor" in q
+        and any(term in q for term in ("reference name", "constructor reference", "constructorref"))
+        and any(term in q for term in ("website", "web site", "url"))
+        and any(term in q for term in ("champion", "winner", "grand prix"))
     )
 
 
@@ -284,10 +311,38 @@ def _question_requests_multiple_fields(question: str) -> bool:
         " type",
         " status",
         " category",
+        " reference name",
+        " website",
+        " web site",
+        " url",
+        " link",
     )
     return any(marker in q for marker in multi_field_markers) and sum(
         1 for term in field_terms if term in q
     ) >= 2
+
+
+def _tally_category_keep_column(question: str, header: list[str]) -> str | None:
+    if len(header) <= 1:
+        return None
+    q = question.lower()
+    if not re.search(r"\btall(?:y|ied|ies)\b", q):
+        return None
+    count_like = {"count", "cnt", "tally", "total", "frequency", "freq", "n"}
+    lower_header = [column.lower().strip() for column in header]
+    if not any(column in count_like or column.endswith("_count") for column in lower_header):
+        return None
+    candidates = [
+        header[idx]
+        for idx, column in enumerate(lower_header)
+        if column not in count_like and not column.endswith("_count")
+    ]
+    if not candidates:
+        return None
+    for preferred in ("element", "type", "category", "name", "id"):
+        if preferred in lower_header:
+            return header[lower_header.index(preferred)]
+    return candidates[0]
 
 
 def _single_requested_entity_column(question: str, header: list[str]) -> str | None:
@@ -295,6 +350,12 @@ def _single_requested_entity_column(question: str, header: list[str]) -> str | N
         return None
 
     q = question.lower()
+    if (
+        any(term in q for term in ("website", "web site", "url"))
+        and any(term in q for term in ("name", "reference", "ref"))
+    ):
+        return None
+
     if not re.search(r"\b(which|what|list|show|return|give)\b", q):
         return None
 
@@ -844,6 +905,130 @@ def _repair_rank_finish_time(
                     writer.writerow([finish_time])
                 return True
     return False
+
+
+def _question_grand_prix_name(question: str) -> str | None:
+    match = re.search(r"\b([A-Za-z][A-Za-z ]+?\s+Grand Prix)\b", question, re.IGNORECASE)
+    if not match:
+        return None
+    return re.sub(r"\s+", " ", match.group(1)).strip()
+
+
+def _find_race_id_in_docs(task_dir: Path, race_name: str, year: int | None) -> str | None:
+    context_dir = task_dir / "context"
+    target = race_name.lower()
+    for path in list(context_dir.rglob("*.md")) + list(context_dir.rglob("*.txt")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        paragraphs = re.split(r"\n\s*\n", text)
+        for paragraph in paragraphs:
+            compact = " ".join(paragraph.split())
+            lower = compact.lower()
+            if target not in lower:
+                continue
+            if year is not None and str(year) not in compact:
+                continue
+            match = re.search(
+                r"\b(?:race\s*id|raceid|race_id)\s*[:#=]?\s*(\d+)\b",
+                compact,
+                re.IGNORECASE,
+            )
+            if match:
+                return match.group(1)
+    return None
+
+
+def _winning_constructor_id(task_dir: Path, race_id: str) -> str | None:
+    context_dir = task_dir / "context"
+    for path in context_dir.rglob("*"):
+        if path.suffix.lower() not in {".db", ".sqlite", ".sqlite3", ".db3"} or not path.is_file():
+            continue
+        try:
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+                table_names = [
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    )
+                ]
+                for table_name in table_names:
+                    quoted = '"' + table_name.replace('"', '""') + '"'
+                    columns = [row[1] for row in conn.execute(f"PRAGMA table_info({quoted})")]
+                    lower = {column.lower(): column for column in columns}
+                    race_col = lower.get("raceid") or lower.get("race_id")
+                    constructor_col = lower.get("constructorid") or lower.get("constructor_id")
+                    position_col = lower.get("positionorder") or lower.get("position_order")
+                    if not race_col or not constructor_col or not position_col:
+                        continue
+                    query = (
+                        f'SELECT "{constructor_col}" FROM {quoted} '
+                        f'WHERE CAST("{race_col}" AS TEXT) = ? '
+                        f'AND CAST("{position_col}" AS INTEGER) = 1 '
+                        "LIMIT 1"
+                    )
+                    row = conn.execute(query, (race_id,)).fetchone()
+                    if row and row[0] is not None:
+                        return str(row[0]).strip()
+        except Exception:
+            continue
+    return None
+
+
+def _constructor_reference_record(task_dir: Path, constructor_id: str) -> tuple[str, str] | None:
+    target = str(constructor_id).strip()
+    for path in (task_dir / "context").rglob("*.json"):
+        try:
+            records = _records_from_json(path)
+        except Exception:
+            continue
+        for record in records:
+            keys = {str(key).lower(): key for key in record}
+            id_key = keys.get("constructorid") or keys.get("constructor_id") or keys.get("id")
+            ref_key = keys.get("constructorref") or keys.get("constructor_ref") or keys.get("ref")
+            url_key = keys.get("url") or keys.get("website") or keys.get("web_site")
+            if not id_key or not ref_key or not url_key:
+                continue
+            if str(record.get(id_key, "")).strip() != target:
+                continue
+            constructor_ref = str(record.get(ref_key, "")).strip()
+            url = str(record.get(url_key, "")).strip()
+            if constructor_ref and url:
+                return constructor_ref, url
+    return None
+
+
+def _repair_constructor_reference_website(
+    *,
+    question: str,
+    task_dir: Path | None,
+    prediction_path: Path,
+) -> bool:
+    if task_dir is None:
+        return False
+    race_name = _question_grand_prix_name(question)
+    if not race_name:
+        return False
+    race_id = _find_race_id_in_docs(task_dir, race_name, _question_year(question))
+    if race_id is None:
+        race = _find_race_record(task_dir, question)
+        race_id = str(race["race_id"]) if race else None
+    if race_id is None:
+        return False
+    constructor_id = _winning_constructor_id(task_dir, race_id)
+    if constructor_id is None:
+        return False
+    record = _constructor_reference_record(task_dir, constructor_id)
+    if record is None:
+        return False
+    constructor_ref, url = record
+    with prediction_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["constructorRef", "url"])
+        writer.writerow([constructor_ref, url])
+    return True
 
 
 def _find_sqlite_table_with_columns(task_dir: Path, required_columns: set[str]) -> str | None:
@@ -1648,6 +1833,16 @@ def execute_repair_plan(
                 applied.append(f"[{action.action_type}] recomputed consumption from Price/Amount unit price")
             else:
                 skipped.append(f"[{action.action_type}] no safe unit-price recompute found")
+        elif action.action_type == "fix_constructor_reference_website":
+            changed = _repair_constructor_reference_website(
+                question=question,
+                task_dir=task_dir,
+                prediction_path=prediction_path,
+            )
+            if changed:
+                applied.append(f"[{action.action_type}] recomputed winning constructor reference and website")
+            else:
+                skipped.append(f"[{action.action_type}] no safe constructor website recompute found")
         elif action.action_type == "fix_budget_times_ratio":
             changed = _repair_budget_times_ratio(
                 question=question,

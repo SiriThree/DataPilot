@@ -102,3 +102,17 @@ def test_infer_output_contract_list_all_single_entity(tmp_path: Path) -> None:
 
     assert contract is not None
     assert contract.expected_column_count == 1
+
+
+def test_infer_output_contract_reference_name_plus_website(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task_demo"
+    task_dir.mkdir()
+    (task_dir / "task.json").write_text(
+        '{"question": "What is the constructor reference name of the champion in the 2009 Singapore Grand Prix? Please give its website."}',
+        encoding="utf-8",
+    )
+
+    contract = infer_output_contract(task_dir)
+
+    assert contract is not None
+    assert contract.expected_column_count == 2

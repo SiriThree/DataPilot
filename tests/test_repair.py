@@ -69,6 +69,108 @@ def test_repair_does_not_prune_multi_field_question(tmp_path: Path) -> None:
     assert _read_rows(prediction) == [["ID", "SEX", "Diagnosis"], ["1", "F", "SLE"]]
 
 
+def test_repair_does_not_prune_reference_name_plus_website(tmp_path: Path) -> None:
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text(
+        "constructor_reference_name,website\n"
+        "mclaren,http://en.wikipedia.org/wiki/McLaren\n",
+        encoding="utf-8",
+    )
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question=(
+            "What is the constructor reference name of the champion in the "
+            "2009 Singapore Grand Prix? Please give its website."
+        ),
+    )
+
+    assert not any(action.action_type == "prune_redundant_columns" for action in plan.actions)
+    assert execution.applied_count == 0
+    assert _read_rows(prediction) == [
+        ["constructor_reference_name", "website"],
+        ["mclaren", "http://en.wikipedia.org/wiki/McLaren"],
+    ]
+
+
+def test_repair_prunes_tally_evidence_column(tmp_path: Path) -> None:
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text(
+        "element,tally\n"
+        "c,73\n"
+        "br,4\n",
+        encoding="utf-8",
+    )
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question="Tally the toxicology element of the 4th atom of each molecule that was carcinogenic.",
+    )
+
+    assert any(action.action_type == "prune_redundant_columns" for action in plan.actions)
+    assert execution.applied_count == 1
+    assert _read_rows(prediction) == [["element"], ["c"], ["br"]]
+
+
+def test_repair_recomputes_constructor_reference_website(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task_x"
+    context_dir = task_dir / "context"
+    (context_dir / "doc").mkdir(parents=True)
+    (context_dir / "json").mkdir()
+    (context_dir / "db").mkdir()
+    (context_dir / "doc" / "races.md").write_text(
+        "The Singapore Grand Prix (Race ID: 14) was held on September 27, 2009.",
+        encoding="utf-8",
+    )
+    (context_dir / "json" / "constructors.json").write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "constructorId": 1,
+                        "constructorRef": "mclaren",
+                        "url": "http://en.wikipedia.org/wiki/McLaren",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(context_dir / "db" / "results.db") as conn:
+        conn.execute(
+            "CREATE TABLE results(raceId INTEGER, constructorId INTEGER, positionOrder INTEGER)"
+        )
+        conn.execute("INSERT INTO results VALUES(14, 1, 1)")
+
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text("constructor_reference_name\nmclaren\n", encoding="utf-8")
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question=(
+            "What is the constructor reference name of the champion in the "
+            "2009 Singapore Grand Prix? Please give its website."
+        ),
+        task_dir=task_dir,
+    )
+
+    assert any(action.action_type == "fix_constructor_reference_website" for action in plan.actions)
+    assert execution.applied_count == 1
+    assert _read_rows(prediction) == [
+        ["constructorRef", "url"],
+        ["mclaren", "http://en.wikipedia.org/wiki/McLaren"],
+    ]
+
+
 def test_repair_recomputes_expense_type_from_event_type(tmp_path: Path) -> None:
     task_dir = tmp_path / "task_x"
     context_dir = task_dir / "context"

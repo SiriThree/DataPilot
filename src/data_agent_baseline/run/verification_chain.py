@@ -148,6 +148,12 @@ def _infer_question_column_count(question: str) -> int | None:
     ):
         return 2
 
+    if (
+        any(term in q for term in ("website", "web site", "url"))
+        and any(term in q for term in ("name", "reference", "ref"))
+    ):
+        return 2
+
     # Explicit "A, B and C" list-style field requests.
     field_patterns = [
         r"\blist\s+(?:their\s+|the\s+)?(.+?)(?:\s+for\b|\s+of\b|\s+where\b|\s+that\b|[?.]?$)",
