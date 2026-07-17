@@ -20,6 +20,7 @@ from data_agent_baseline.run.verification_chain import (
     VerificationReport,
     run_full_verification,
 )
+from data_agent_baseline.tools.duckdb_sql import execute_data_sql
 
 NULL_TOKENS = {"null", "none", "nan", "na", "n/a", "nat", "inf", "-inf", "infinity", "-infinity"}
 
@@ -143,6 +144,17 @@ def _check_semantic_intent(
             blocking=False,
         ))
 
+    if _looks_like_unit_price_consumption_status_question(question) and task_dir is not None:
+        actions.append(RepairAction(
+            priority=13,
+            action_type="fix_unit_price_consumption_status",
+            detail=(
+                "Recompute consumption status using per-unit price "
+                "(Price / Amount) instead of total transaction Price"
+            ),
+            blocking=False,
+        ))
+
     return actions
 
 
@@ -163,6 +175,16 @@ def _looks_like_expense_type_total_question(question: str) -> bool:
         and any(term in q for term in ("total", "value", "sum"))
         and any(term in q for term in ("approved", "approve"))
         and "event" in q
+    )
+
+
+def _looks_like_unit_price_consumption_status_question(question: str) -> bool:
+    q = question.lower()
+    return (
+        "per unit" in q
+        and "product" in q
+        and "consumption status" in q
+        and any(term in q for term in ("paid more than", "more than", "greater than"))
     )
 
 
@@ -583,6 +605,68 @@ def _question_year(question: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _question_month(question: str) -> int | None:
+    q = question.lower()
+    months = {
+        "january": 1,
+        "february": 2,
+        "march": 3,
+        "april": 4,
+        "may": 5,
+        "june": 6,
+        "july": 7,
+        "august": 8,
+        "september": 9,
+        "october": 10,
+        "november": 11,
+        "december": 12,
+    }
+    for name, value in months.items():
+        if re.search(rf"\b{re.escape(name)}\b", q):
+            return value
+    match = re.search(r"\b(?:month|m)\s*(\d{1,2})\b", q)
+    if match:
+        value = int(match.group(1))
+        if 1 <= value <= 12:
+            return value
+    return None
+
+
+def _question_product_id(question: str) -> int | None:
+    patterns = (
+        r"\bproduct\s+id\s+(?:no\.?\s*)?(\d+)\b",
+        r"\bproduct\s+(?:no\.?\s*)?(\d+)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, question, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _question_unit_price_threshold(question: str) -> float | None:
+    patterns = (
+        r"\bmore than\s+([-+]?\d+(?:\.\d+)?)\s+per unit\b",
+        r"\bgreater than\s+([-+]?\d+(?:\.\d+)?)\s+per unit\b",
+        r"\bpaid\s+more than\s+([-+]?\d+(?:\.\d+)?)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, question, flags=re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+    return None
+
+
+def _safe_duckdb_table_name(path: Path) -> str:
+    raw = "__".join(path.with_suffix("").parts)
+    safe = re.sub(r"\W+", "_", raw).strip("_").lower()
+    if not safe:
+        safe = "table"
+    if safe[0].isdigit():
+        safe = f"t_{safe}"
+    return safe[:96]
+
+
 def _question_rank_value(question: str) -> int | None:
     q = question.lower()
     ordinals = {
@@ -688,6 +772,108 @@ def _repair_rank_finish_time(
                     writer.writerow([finish_time])
                 return True
     return False
+
+
+def _find_sqlite_table_with_columns(task_dir: Path, required_columns: set[str]) -> str | None:
+    context_dir = task_dir / "context"
+    for path in context_dir.rglob("*"):
+        if path.suffix.lower() not in {".db", ".sqlite", ".sqlite3", ".db3"} or not path.is_file():
+            continue
+        try:
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+                table_names = [
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    )
+                ]
+                for table_name in table_names:
+                    quoted = '"' + table_name.replace('"', '""') + '"'
+                    columns = {
+                        row[1].strip().lower()
+                        for row in conn.execute(f"PRAGMA table_info({quoted})")
+                    }
+                    if required_columns <= columns:
+                        return _safe_duckdb_table_name(Path(table_name))
+        except Exception:
+            continue
+    return None
+
+
+def _find_csv_table_with_columns(task_dir: Path, required_columns: set[str]) -> str | None:
+    context_dir = task_dir / "context"
+    for path in context_dir.rglob("*.csv"):
+        try:
+            with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                header = next(csv.reader(handle), [])
+        except Exception:
+            continue
+        columns = {cell.strip().lower() for cell in header}
+        if required_columns <= columns:
+            return _safe_duckdb_table_name(path.relative_to(context_dir))
+    return None
+
+
+def _repair_unit_price_consumption_status(
+    *,
+    question: str,
+    task_dir: Path | None,
+    prediction_path: Path,
+) -> bool:
+    if task_dir is None:
+        return False
+    product_id = _question_product_id(question)
+    threshold = _question_unit_price_threshold(question)
+    year = _question_year(question)
+    month = _question_month(question)
+    if product_id is None or threshold is None or year is None or month is None:
+        return False
+
+    transaction_table = _find_sqlite_table_with_columns(
+        task_dir,
+        {"transactionid", "customerid", "productid", "amount", "price"},
+    )
+    yearmonth_table = _find_csv_table_with_columns(
+        task_dir,
+        {"customerid", "date", "consumption"},
+    )
+    if not transaction_table or not yearmonth_table:
+        return False
+
+    yyyymm = year * 100 + month
+    sql = f"""
+    WITH matched AS (
+      SELECT
+        ym.Consumption AS Consumption,
+        MIN(tx.TransactionID) AS first_transaction_id
+      FROM {transaction_table} tx
+      JOIN {yearmonth_table} ym
+        ON tx.CustomerID = ym.CustomerID
+      WHERE tx.ProductID = {product_id}
+        AND tx.Amount <> 0
+        AND tx.Price / tx.Amount > {threshold}
+        AND ym.Date = {yyyymm}
+      GROUP BY ym.Consumption
+    )
+    SELECT Consumption
+    FROM matched
+    ORDER BY first_transaction_id
+    """
+    try:
+        result = execute_data_sql(task_dir / "context", sql, limit=10_000)
+    except Exception:
+        return False
+    rows = result.get("rows") or []
+    if not rows:
+        return False
+
+    with prediction_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["Consumption"])
+        for row in rows:
+            writer.writerow([row[0]])
+    return True
 
 
 def _find_event_id(task_dir: Path, event_name: str) -> str | None:
@@ -939,6 +1125,16 @@ def execute_repair_plan(
                 applied.append(f"[{action.action_type}] recomputed approved total by event type")
             else:
                 skipped.append(f"[{action.action_type}] no safe event-type recompute found")
+        elif action.action_type == "fix_unit_price_consumption_status":
+            changed = _repair_unit_price_consumption_status(
+                question=question,
+                task_dir=task_dir,
+                prediction_path=prediction_path,
+            )
+            if changed:
+                applied.append(f"[{action.action_type}] recomputed consumption from Price/Amount unit price")
+            else:
+                skipped.append(f"[{action.action_type}] no safe unit-price recompute found")
         else:
             # For semantic actions we can't auto-fix, skip but note
             skipped.append(f"[{action.action_type}] requires LLM re-run: {action.detail}")

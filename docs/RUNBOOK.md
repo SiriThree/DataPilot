@@ -350,6 +350,44 @@ Reference-inspired shape contract update:
   - `task_163`: 2 columns
   - `task_89`: 1 column
 
+## Stage 6 Large-Table Stability
+
+The Stage 6 optimization targets medium tasks with large CSV context files,
+especially `task_169` and `task_180`.
+
+Implemented safeguards:
+
+- Route detection now flags large CSV files as `large_csv_sql_first` and pushes
+  the agent toward `profile_context -> execute_data_sql`.
+- `execute_python` and stateful Python now block unbounded
+  `pandas.read_csv(...)` calls on CSV files >= 5 MB unless the call uses
+  `nrows`, `chunksize`, `iterator`, or `usecols`.
+- Repair now handles `per unit` transaction wording by recomputing unit price as
+  `Price / Amount`, not total transaction `Price`.
+
+Validated commands:
+
+```powershell
+python -m uv run dabench run-task task_169 --config configs/react_baseline.local.yaml
+python -m uv run python evaluate.py batch --predictions-dir artifacts/runs/20260717T064508Z --only-existing
+
+python -m uv run dabench run-task task_180 --config configs/react_baseline.local.yaml
+python -m uv run python evaluate.py batch --predictions-dir artifacts/runs/20260717T065555Z --only-existing
+```
+
+Validated results:
+
+```text
+task_169 -> route sql_first, risk large_csv_sql_first, score 1.0
+task_180 -> route sql_first, risk large_csv_sql_first, score 1.0
+```
+
+Useful trace checks:
+
+```powershell
+rg -n "large_csv_sql_first|execute_data_sql|fix_unit_price" artifacts/runs/<run_id>/<task_id>/trace.json
+```
+
 ## PDF Support
 
 The agent can profile and read PDF files in task context directories.

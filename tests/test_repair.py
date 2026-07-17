@@ -161,3 +161,54 @@ def test_repair_recomputes_finish_time_from_literal_rank(tmp_path: Path) -> None
     assert any(action.action_type == "fix_rank_finish_time" for action in plan.actions)
     assert execution.applied_count == 1
     assert _read_rows(prediction) == [["time"], ["+16.445"]]
+
+
+def test_repair_uses_unit_price_for_consumption_status(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task_x"
+    context_dir = task_dir / "context"
+    (context_dir / "csv").mkdir(parents=True)
+    (context_dir / "db").mkdir()
+    with sqlite3.connect(context_dir / "db" / "transactions_1k.db") as conn:
+        conn.execute(
+            "CREATE TABLE transactions_1k("
+            "TransactionID INTEGER, CustomerID INTEGER, ProductID INTEGER, Amount INTEGER, Price REAL)"
+        )
+        conn.executemany(
+            "INSERT INTO transactions_1k VALUES (?, ?, ?, ?, ?)",
+            [
+                (1, 101, 5, 10, 120.0),   # total price > 29, unit price 12: exclude
+                (2, 102, 5, 3, 90.0),     # unit price 30: include
+                (3, 103, 5, 2, 70.0),     # unit price 35: include
+                (4, 103, 5, 2, 70.0),     # duplicate customer/consumption: de-dupe
+                (5, 104, 2, 1, 40.0),     # wrong product
+            ],
+        )
+    (context_dir / "csv" / "yearmonth.csv").write_text(
+        "CustomerID,Date,Consumption\n"
+        "101,201208,1000.0\n"
+        "102,201208,222.2\n"
+        "103,201208,333.3\n"
+        "104,201208,444.4\n",
+        encoding="utf-8",
+    )
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text(
+        "CustomerID,Consumption_Aug2012\n101,1000.0\n102,222.2\n103,333.3\n",
+        encoding="utf-8",
+    )
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question=(
+            "For all the people who paid more than 29.00 per unit of product id No.5. "
+            "Give their consumption status in the August of 2012."
+        ),
+        task_dir=task_dir,
+    )
+
+    assert any(action.action_type == "fix_unit_price_consumption_status" for action in plan.actions)
+    assert execution.applied_count == 1
+    assert _read_rows(prediction) == [["Consumption"], ["222.2"], ["333.3"]]

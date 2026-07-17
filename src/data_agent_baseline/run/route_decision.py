@@ -36,6 +36,8 @@ DOCUMENT_SIGNALS = {
     "document", "based on the text",
 }
 
+LARGE_CSV_SQL_FIRST_BYTES = 5 * 1024 * 1024
+
 
 # ── Data structures ───────────────────────────────────────────────
 
@@ -159,6 +161,7 @@ def decide_route(
 
     # ── Scan context files ──
     csv_count = 0
+    large_csv_count = 0
     db_count = 0
     json_count = 0
     doc_count = 0
@@ -174,6 +177,11 @@ def decide_route(
 
             if suffix == ".csv":
                 csv_count += 1
+                try:
+                    if path.stat().st_size >= LARGE_CSV_SQL_FIRST_BYTES:
+                        large_csv_count += 1
+                except OSError:
+                    pass
                 schema_hints.append(_hint_csv(path))
             elif suffix in (".sqlite", ".db", ".duckdb"):
                 db_count += 1
@@ -205,6 +213,13 @@ def decide_route(
         scores["hybrid_sql_python"] += 1
         recommended_tools.extend(["pandas", "python"])
         reasons.append(f"csv files detected ({csv_count})")
+
+    if large_csv_count:
+        scores["sql_first"] += 5
+        scores["hybrid_sql_python"] += 3
+        recommended_tools.extend(["execute_data_sql", "duckdb"])
+        risk_flags.append("large_csv_sql_first")
+        reasons.append(f"large csv files detected ({large_csv_count}); prefer DuckDB filtering/aggregation")
 
     if json_count:
         scores["python_first"] += 2
@@ -279,6 +294,10 @@ def decide_route(
             scores["sql_first"] += 4
             scores["hybrid_sql_python"] += 2
             reasons.append(f"difficulty={difficulty}: prefer SQL/table fast path without data docs")
+        elif large_csv_count:
+            scores["sql_first"] += 4
+            scores["hybrid_sql_python"] += 2
+            reasons.append(f"difficulty={difficulty}: prefer SQL/table fast path for large CSV context")
         else:
             scores["python_first"] += 4
             scores["hybrid_sql_python"] += 1
@@ -361,6 +380,17 @@ def build_route_prompt_hint(rd: RouteDecision) -> str:
             "  5. execute_python on the extracted CSV tables for join + filter + count/aggregate (simple math only, no regex)\n"
             "  6. answer\n"
             "NEVER use execute_python to parse raw .md files with regex. Use extract_doc_records instead."
+        )
+
+    if "large_csv_sql_first" in rd.risk_flags:
+        lines.append(
+            "\nMANDATORY LARGE-CSV STRATEGY:\n"
+            "At least one CSV is large enough that full pandas reads are risky.\n"
+            "Follow this sequence:\n"
+            "  1. profile_context to get DuckDB table names and column schemas\n"
+            "  2. execute_data_sql for filtering, joins, aggregation, sorting, and top-k work\n"
+            "  3. execute_python only after SQL has reduced the data, or with bounded pandas reads using nrows/chunksize/usecols\n"
+            "Do NOT call pandas.read_csv on a large CSV without nrows, chunksize, or usecols."
         )
 
     return "\n".join(lines)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ast
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from data_agent_baseline.benchmark.schema import AnswerTable, PublicTask
@@ -26,6 +29,7 @@ from data_agent_baseline.tools.stateful_python import execute_stateful_python, r
 from data_agent_baseline.tools.threshold_grounding import ground_thresholds
 
 EXECUTE_PYTHON_TIMEOUT_SECONDS = 30
+LARGE_CSV_PYTHON_READ_BYTES = 5 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +117,9 @@ def _execute_data_sql(task: PublicTask, action_input: dict[str, Any]) -> ToolExe
 
 def _execute_python(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
     code = str(action_input["code"])
+    guard = _guard_large_csv_python_reads(task, code)
+    if guard is not None:
+        return ToolExecutionResult(ok=False, content=guard)
     content = execute_python_code(
         context_root=task.context_dir,
         code=code,
@@ -123,6 +130,9 @@ def _execute_python(task: PublicTask, action_input: dict[str, Any]) -> ToolExecu
 
 def _execute_python_stateful(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:
     code = str(action_input["code"])
+    guard = _guard_large_csv_python_reads(task, code)
+    if guard is not None:
+        return ToolExecutionResult(ok=False, content=guard)
     content = execute_stateful_python(
         task_id=task.task_id,
         context_root=task.context_dir,
@@ -134,6 +144,111 @@ def _execute_python_stateful(task: PublicTask, action_input: dict[str, Any]) -> 
 
 def _profile_context(task: PublicTask, _action_input: dict[str, Any]) -> ToolExecutionResult:
     return ToolExecutionResult(ok=True, content=profile_context(task.context_dir))
+
+
+def _literal_string(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _is_pandas_read_csv_call(node: ast.Call) -> bool:
+    func = node.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "read_csv"
+        and isinstance(func.value, ast.Name)
+        and func.value.id in {"pd", "pandas"}
+    )
+
+
+def _extract_read_csv_path(node: ast.Call) -> str | None:
+    if node.args:
+        value = _literal_string(node.args[0])
+        if value:
+            return value
+    for keyword in node.keywords:
+        if keyword.arg in {"filepath_or_buffer", "path"}:
+            value = _literal_string(keyword.value)
+            if value:
+                return value
+    return None
+
+
+def _has_bounded_csv_read_options(node: ast.Call) -> bool:
+    keyword_names = {keyword.arg for keyword in node.keywords if keyword.arg}
+    return bool(keyword_names & {"chunksize", "iterator", "nrows", "usecols"})
+
+
+def _context_relative_path(context_dir: Path, raw_path: str) -> Path | None:
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(context_dir.resolve())
+            return resolved
+        except (OSError, ValueError):
+            return None
+    return (context_dir / candidate).resolve()
+
+
+def _duckdb_table_hint(relative_path: str) -> str:
+    stem = re.sub(r"\W+", "_", Path(relative_path).stem).strip("_").lower() or "table"
+    return f"csv__{stem}"
+
+
+def _guard_large_csv_python_reads(task: PublicTask, code: str) -> dict[str, Any] | None:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+
+    context_dir = task.context_dir.resolve()
+    blocked: list[dict[str, Any]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _is_pandas_read_csv_call(node):
+            continue
+        raw_path = _extract_read_csv_path(node)
+        if not raw_path or _has_bounded_csv_read_options(node):
+            continue
+        resolved = _context_relative_path(context_dir, raw_path)
+        if resolved is None or not resolved.exists() or resolved.suffix.lower() != ".csv":
+            continue
+        try:
+            size_bytes = resolved.stat().st_size
+        except OSError:
+            continue
+        if size_bytes < LARGE_CSV_PYTHON_READ_BYTES:
+            continue
+        relative = resolved.relative_to(context_dir).as_posix()
+        blocked.append({
+            "path": relative,
+            "size_bytes": size_bytes,
+            "duckdb_table": _duckdb_table_hint(relative),
+        })
+
+    if not blocked:
+        return None
+
+    examples = [
+        (
+            "Use execute_data_sql instead, e.g. "
+            f"SELECT * FROM {item['duckdb_table']} WHERE ... LIMIT 20"
+        )
+        for item in blocked[:3]
+    ]
+    return {
+        "success": False,
+        "error": "large_csv_full_read_blocked",
+        "message": (
+            "Python attempted to load a large CSV with pandas.read_csv without "
+            "chunksize, nrows, or usecols. Use execute_data_sql/DuckDB to filter, "
+            "join, and aggregate large tables first."
+        ),
+        "blocked_reads": blocked,
+        "recommended_next_action": "execute_data_sql",
+        "examples": examples,
+    }
 
 
 def _extract_doc_records(task: PublicTask, action_input: dict[str, Any]) -> ToolExecutionResult:

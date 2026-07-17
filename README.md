@@ -167,6 +167,8 @@ src/data_agent_baseline/run/
 - average monthly 候选公式重算
 - event expense type 总额重算
 - literal rank finish time 重算
+- 大 CSV 任务的 SQL-first 路由和 pandas 全表读取保护
+- `per unit` 单价语义修复：用 `Price / Amount` 而不是总价 `Price`
 
 这些 repair 都是保守规则，并且有测试覆盖。
 
@@ -175,7 +177,7 @@ src/data_agent_baseline/run/
 当前本地测试状态：
 
 ```text
-28 passed, 1 skipped
+36 passed, 1 skipped
 ```
 
 已经完成：
@@ -202,11 +204,13 @@ src/data_agent_baseline/run/
 - `limit 20` 部分运行完成 18 个任务，partial `overall_score = 0.8889`
 - `task_89` rank 语义错误已修复
 - `task_163` expense type 语义错误已修复
+- `task_169` 大表月均消费任务已稳定走 SQL-first，真实评估 `score = 1.0`
+- `task_180` 大表单价筛选任务已修复 `per unit` 语义，真实评估 `score = 1.0`
 
 当前下一步重点：
 
 ```text
-task_169 / task_180 等 medium 大表任务的性能和超时控制
+扩大 medium / hard 任务批量回归，继续把失败样本沉淀为通用 verifier / repair
 ```
 
 后续方向是：
@@ -405,7 +409,7 @@ python -m uv run --extra dev python -m pytest
 当前期望结果：
 
 ```text
-28 passed, 1 skipped
+36 passed, 1 skipped
 ```
 
 真实模型 smoke test：

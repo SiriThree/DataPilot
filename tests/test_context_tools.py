@@ -9,7 +9,7 @@ import pytest
 from data_agent_baseline.benchmark.schema import PublicTask, TaskAssets, TaskRecord
 from data_agent_baseline.tools.duckdb_sql import execute_data_sql
 from data_agent_baseline.tools.profiler import profile_context
-from data_agent_baseline.tools.registry import _answer
+from data_agent_baseline.tools.registry import _answer, _execute_python
 
 
 def _make_task(tmp_path: Path) -> PublicTask:
@@ -86,3 +86,54 @@ def test_answer_tool_validates_shape(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="match the number of columns"):
         _answer(task, {"columns": ["a", "b"], "rows": [["only-one-cell"]]})
+
+
+def test_execute_python_blocks_unbounded_large_csv_read(tmp_path: Path) -> None:
+    task = _make_task(tmp_path)
+    large_csv = task.context_dir / "csv" / "big.csv"
+    with large_csv.open("w", encoding="utf-8", newline="") as f:
+        f.write("id,value\n")
+        row = "1,1234567890\n"
+        for _ in range((5 * 1024 * 1024 // len(row)) + 1):
+            f.write(row)
+
+    result = _execute_python(
+        task,
+        {
+            "code": (
+                "import pandas as pd\n"
+                "df = pd.read_csv('csv/big.csv')\n"
+                "print(len(df))\n"
+            )
+        },
+    )
+
+    assert result.ok is False
+    assert result.content["error"] == "large_csv_full_read_blocked"
+    assert result.content["recommended_next_action"] == "execute_data_sql"
+    assert result.content["blocked_reads"][0]["path"] == "csv/big.csv"
+    assert result.content["blocked_reads"][0]["duckdb_table"] == "csv__big"
+
+
+def test_execute_python_allows_bounded_large_csv_read(tmp_path: Path) -> None:
+    task = _make_task(tmp_path)
+    large_csv = task.context_dir / "csv" / "big.csv"
+    with large_csv.open("w", encoding="utf-8", newline="") as f:
+        f.write("id,value\n")
+        row = "1,1234567890\n"
+        for _ in range((5 * 1024 * 1024 // len(row)) + 1):
+            f.write(row)
+
+    result = _execute_python(
+        task,
+        {
+            "code": (
+                "import pandas as pd\n"
+                "df = pd.read_csv('csv/big.csv', nrows=2)\n"
+                "print(len(df))\n"
+            )
+        },
+    )
+
+    assert result.ok is True
+    assert "2" in result.content["output"]
