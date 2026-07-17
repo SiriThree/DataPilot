@@ -1,12 +1,22 @@
 # DataPilot
 
-DataPilot 是一个面向 KDD Cup 2026 DataAgent-Bench 工作流的本地 DataAgent 项目。它的目标是让智能体自动读取复杂任务上下文，规划工具调用，分析结构化与半结构化数据，并最终生成可评测的 `prediction.csv`。
+DataPilot 是一个面向 KDD Cup 2026 DataAgent-Bench 的本地 DataAgent 项目。它的目标是让智能体自动读取复杂任务上下文，选择合适的数据工具，完成结构化、半结构化和文档数据分析，并输出可评测的 `prediction.csv`。
 
-这个仓库已经不只是原始 starter baseline，而是一个具备完整本地闭环的 DataAgent 原型：包含模型网关、工具系统、ReAct / Multi-Agent 执行循环、验证链、确定性修复、失败分析和测试体系。
+当前项目已经不只是 starter baseline，而是一个具备本地闭环的 DataAgent 原型：包括模型网关、任务路由、ReAct / Multi-Agent 执行、工具系统、验证链、guided retry、确定性 repair、failure mining 和回归测试。
 
-## 项目要做什么
+## 当前重点
 
-每个 benchmark 任务通常长这样：
+我们现在的优化方向已经从“补单个失败任务”转向“提升泛化能力”：
+
+- 用 `task_profile` 识别任务类型，例如 `aggregation`、`rank_lookup`、`threshold_count`、`ratio_or_percentage`。
+- guided retry 根据任务类型生成更具体的重试策略。
+- deterministic repair 按 reasoning pattern 组织，而不是按公开集领域命名。
+- failure mining 自动聚类低分任务，并给出下一步开发建议。
+- 避免继续堆 public demo 特例，优先抽象通用 verifier / solver。
+
+## 项目能做什么
+
+每个 benchmark 任务通常包含：
 
 ```text
 task_<id>/
@@ -19,110 +29,69 @@ task_<id>/
     *.pdf
 ```
 
-Agent 要完成的事情是：
+Agent 会完成以下流程：
 
 1. 读取 `task.json` 中的问题。
-2. 检查 `context/` 里的数据文件。
-3. 判断该使用 SQL、Python、文档搜索还是 PDF 工具。
-4. 基于上下文计算出有依据的答案。
-5. 用 `answer` 工具提交紧凑的 CSV 形状答案。
-6. 写出 `prediction.csv`、`trace.json` 和 `failure_analysis.json` 方便复盘。
+2. 扫描 `context/` 中的 CSV、JSON、SQLite、Markdown、PDF 等文件。
+3. 判断任务路线：SQL-first、Python-first、document-first 或 hybrid。
+4. 调用工具完成查询、计算、文档抽取和验证。
+5. 用 `answer` 工具提交 CSV 形状答案。
+6. 写出 `prediction.csv`、`trace.json`、`failure_analysis.json`。
 
-每个任务的运行产物位于：
+运行产物位于：
 
 ```text
-artifacts/runs/<run_id>/<task_id>/prediction.csv
-artifacts/runs/<run_id>/<task_id>/trace.json
-artifacts/runs/<run_id>/<task_id>/failure_analysis.json
+artifacts/runs/<run_id>/<task_id>/
+  prediction.csv
+  trace.json
+  failure_analysis.json
 ```
 
-其中 `prediction.csv` 是最终答案，`trace.json` 是完整推理和工具调用轨迹。
+批量运行还会生成：
 
-## 当前整体架构
+```text
+artifacts/runs/<run_id>/summary.json
+artifacts/runs/<run_id>/failure_taxonomy.json
+```
+
+评测和失败挖掘后还会生成：
+
+```text
+artifacts/runs/<run_id>/evaluation.json
+artifacts/runs/<run_id>/failure_mining.json
+artifacts/runs/<run_id>/failure_mining.md
+```
+
+## 核心架构
 
 ```text
 任务输入
   -> 配置加载
   -> 模型网关
-  -> 路由决策
+  -> 任务路由和 task_profile
   -> ReAct / Multi-Agent 执行循环
   -> 工具系统
-  -> Step Controller
-  -> prediction.csv 写出
+  -> prediction.csv
   -> 验证链
-  -> 确定性 repair
-  -> failure analysis
+  -> guided retry
+  -> deterministic repair
+  -> failure analysis / failure mining
   -> 本地 evaluator
 ```
 
-## 核心模块
-
-### 配置系统
-
-位置：
+核心目录：
 
 ```text
-src/data_agent_baseline/config.py
+src/data_agent_baseline/
+  agents/       模型适配器、prompt、ReAct、多智能体执行
+  benchmark/    数据集 schema 和 loader
+  run/          runner、route、verification、repair、retry、failure mining
+  tools/        CSV / JSON / SQLite / DuckDB / Python / Doc / PDF / answer 工具
 ```
 
-能力：
+## 工具系统
 
-- 加载 YAML 配置
-- 自动加载本地 `.env`
-- 支持 `${ENV_VAR}` 和 `${ENV_VAR:-default}`
-- 支持模型后端选择
-- 避免把真实 key 写进配置文件
-
-### 模型网关
-
-位置：
-
-```text
-src/data_agent_baseline/agents/model.py
-```
-
-当前支持：
-
-- OpenAI-compatible API
-- DeepSeek
-- Ollama 本地模型
-
-Ollama 适配器已经做了本地模型兼容：
-
-- `think: false`
-- `format: json`
-- `num_predict: 2048`
-- 空 `content` fallback
-
-### Agent 执行循环
-
-位置：
-
-```text
-src/data_agent_baseline/agents/
-```
-
-包含：
-
-- ReAct Agent
-- Multi-Agent planner / executor
-- prompt 构造
-- JSON 输出解析和修复
-- step controller
-- debugger
-- verifier
-
-Agent 不是直接猜答案，而是按照 JSON action 协议一步步调用工具。
-
-### 工具系统
-
-位置：
-
-```text
-src/data_agent_baseline/tools/
-```
-
-当前工具支持：
+当前工具能力包括：
 
 - CSV profile / read
 - JSON profile / read / query
@@ -130,104 +99,48 @@ src/data_agent_baseline/tools/
 - SQLite SQL 执行
 - DuckDB 跨 CSV / JSON / SQLite 查询
 - Python 执行
-- Markdown 文档读取和搜索
+- Markdown / 文本文档读取和搜索
+- 长文档结构化抽取
 - PDF 读取、搜索和表格抽取
+- threshold grounding
 - 最终 `answer` 提交
 
-目前最稳定的是结构化数据分析路径：
+当前最稳定的数据分析路线是：
 
 ```text
-CSV / JSON / SQLite -> DuckDB SQL -> Python 辅助计算 -> answer
+profile_context -> execute_data_sql -> execute_python -> answer
 ```
 
-PDF 和长文档工具已经可用，但复杂 PDF 表格和长叙事文档仍需要继续通过 benchmark 样本打磨。
+对于大 CSV，路由会优先提示使用 DuckDB SQL，避免直接 `pandas.read_csv` 全表读取。
 
-### 运行、验证和修复
+## Repair 去特例化
 
-位置：
+`src/data_agent_baseline/run/repairs/` 现在按通用 pattern 命名：
 
 ```text
-src/data_agent_baseline/run/
+filtered_entity_count.py
+filtered_join_aggregation.py
+joined_table_filter.py
+rank_lookup.py
+ranged_rank_lookup.py
+threshold_count.py
+output_shape.py
+scalar_format.py
 ```
 
-包含：
+这一步的目的不是删除已有能力，而是把“领域补丁”逐步迁移成“通用推理模式”：
 
-- `runner.py`：任务运行主流程
-- `route_decision.py`：SQL / Python / 文档 / hybrid 路由决策
-- `verification_chain.py`：5 层验证链
-- `semantic_verifier.py`：问题语义风险检查
-- `repair.py`：确定性修复
-- `guided_retry.py`：失败后的重试提示
-- `failure_analysis.py`：失败归因
+- rank lookup：处理排名字段、排序语义、附属字段查找。
+- threshold count：处理阈值、群体过滤、实体级计数。
+- filtered entity count：处理跨表/跨记录过滤后的实体计数。
+- joined table filter：处理表连接、过滤、字段投影。
+- filtered join aggregation：处理 join 后的过滤聚合。
 
-当前 repair 能力包括：
+后续新增 repair 应优先进入这些通用模式，而不是按某个 public task 或领域创建新模块。
 
-- 裁剪冗余证据列
-- full name 拆分为 `first_name` / `last_name`
-- average monthly 候选公式重算
-- event expense type 总额重算
-- literal rank finish time 重算
-- 大 CSV 任务的 SQL-first 路由和 pandas 全表读取保护
-- `per unit` 单价语义修复：用 `Price / Amount` 而不是总价 `Price`
-- `how many times A more than B` 比值语义修复：输出 `A / B` 而不是 count
-- 毒理分子题的 filtered atom count 修复
-- 医疗患者题的文档人口属性补全
-- 长文档 superhero 题的跨 section entity join 抽取增强
+## 安装
 
-这些 repair 都是保守规则，并且有测试覆盖。
-
-## 当前项目进度
-
-当前本地测试状态：
-
-```text
-40 passed, 1 skipped
-```
-
-已经完成：
-
-- 本地环境跑通
-- demo 数据集跑通
-- DeepSeek 后端跑通
-- Ollama 后端跑通
-- CSV / JSON / SQLite 工具闭环
-- Markdown 文档工具
-- PDF 工具
-- 本地 evaluator
-- trace / summary / failure_analysis 产物
-- Step Controller
-- verification chain
-- deterministic repair
-- regression tests
-- GitHub 仓库初始化
-
-近期 benchmark 进展：
-
-- DeepSeek `limit 10` 跑通，`overall_score = 0.985`
-- `task_25` / `task_38` 的冗余列问题已修复
-- `limit 20` 部分运行完成 18 个任务，partial `overall_score = 0.8889`
-- `task_89` rank 语义错误已修复
-- `task_163` expense type 语义错误已修复
-- `task_169` 大表月均消费任务已稳定走 SQL-first，真实评估 `score = 1.0`
-- `task_180` 大表单价筛选任务已修复 `per unit` 语义，真实评估 `score = 1.0`
-- `task_200` / `task_344` / `task_352` / `task_396` 四个失败任务已抽象为通用 repair，重放评估 `score = 1.0`
-
-当前下一步重点：
-
-```text
-扩大 medium / hard 任务批量回归，继续加强长文档结构化抽取和语义 verifier
-```
-
-后续方向是：
-
-- SQL-first 策略更强
-- 避免 pandas 直接读超大表
-- 加强大表采样、预聚合和超时控制
-- 继续把失败样本抽象成通用 verifier / repair
-
-## 安装环境
-
-如果没有 `uv`：
+安装 `uv`：
 
 ```powershell
 python -m pip install --user uv
@@ -239,7 +152,7 @@ python -m pip install --user uv
 python -m uv sync
 ```
 
-开发和测试依赖：
+安装开发依赖：
 
 ```powershell
 python -m uv sync --extra dev
@@ -247,11 +160,13 @@ python -m uv sync --extra dev
 
 ## 配置模型 Key
 
-复制 `.env.example`：
+复制环境变量模板：
 
 ```powershell
 Copy-Item .env.example .env
 ```
+
+在 `.env` 中填入真实 key，不要把真实 key 写进 YAML、README、截图或提交记录。
 
 DeepSeek 示例：
 
@@ -261,6 +176,13 @@ DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_API_BASE=https://api.deepseek.com
 ```
 
+Qwen / Kimi 等 OpenAI-compatible 后端也使用同样方式配置：
+
+```env
+QWEN_API_KEY=your_qwen_api_key_here
+KIMI_API_KEY=your_kimi_api_key_here
+```
+
 Ollama 示例：
 
 ```env
@@ -268,17 +190,9 @@ OLLAMA_MODEL=qwen3:8b
 OLLAMA_API_BASE=http://localhost:11434
 ```
 
-注意：
-
-- 真实 key 只放 `.env`
-- 不要提交 `.env`
-- 不要把真实 key 写进 YAML、README 或截图
-
 ## 数据目录
 
-数据不进入 git。
-
-本地期望结构：
+数据不进入 git。请在本地放置：
 
 ```text
 data/public/input/
@@ -287,10 +201,10 @@ data/public/output/
 
 其中：
 
-- `input/` 是任务输入
-- `output/` 是 public demo 的 gold answer
+- `input/` 是任务输入。
+- `output/` 是 public demo 的 gold answer。
 
-隐藏测试环境通常只有 `input/`，不能假设一定有 `output/`。
+hidden test 通常只有 `input/`，不能假设一定存在 `output/`。
 
 ## 常用命令
 
@@ -300,31 +214,40 @@ data/public/output/
 python -m uv run dabench status --config configs/react_baseline.local.yaml
 ```
 
-查看一个任务：
+查看任务：
 
 ```powershell
-python -m uv run dabench inspect-task task_11 --config configs/react_baseline.local.yaml
+python -m uv run dabench inspect-task task_1 --config configs/react_baseline.local.yaml
 ```
 
-运行一个任务：
+运行单个任务：
 
 ```powershell
-python -m uv run dabench run-task task_11 --config configs/react_baseline.local.yaml
+python -m uv run dabench run-task task_1 --config configs/react_baseline.local.yaml
 ```
 
-运行小批量 benchmark：
+小批量 benchmark：
 
 ```powershell
-python -m uv run dabench run-benchmark --config configs/react_baseline.local.yaml --limit 10
+python -m uv run dabench run-benchmark --config configs/react_baseline.local.yaml --limit 20
 ```
 
-运行全部任务：
+全量 benchmark：
 
 ```powershell
 python -m uv run dabench run-benchmark --config configs/react_baseline.local.yaml
 ```
 
-评估一个 run：
+评测：
+
+```powershell
+python -m uv run python evaluate.py batch `
+  --input-dir data/public/input `
+  --output-dir data/public/output `
+  --predictions-dir artifacts/runs/<run_id>
+```
+
+如果只跑了 `--limit N`，建议加 `--only-existing`：
 
 ```powershell
 python -m uv run python evaluate.py batch `
@@ -334,49 +257,24 @@ python -m uv run python evaluate.py batch `
   --only-existing
 ```
 
-如果是完整 50 题 benchmark，可以去掉 `--only-existing`，让缺失 prediction 也计入失败。
+失败挖掘：
 
-## 两种模型后端怎么跑
+```powershell
+python -m uv run dabench mine-failures artifacts/runs/<run_id>
+```
 
-### DeepSeek / OpenAI-compatible
-
-配置：
+输出：
 
 ```text
-configs/react_baseline.local.yaml
+artifacts/runs/<run_id>/failure_mining.json
+artifacts/runs/<run_id>/failure_mining.md
 ```
 
-命令：
+`failure_mining.md` 会按低分任务、任务类型、路线、信号和领域聚类，并生成 `Development Recommendations`，用于决定下一步该补哪个 verifier / solver。
 
-```powershell
-python -m uv run dabench run-benchmark --config configs/react_baseline.local.yaml
-```
+## 查看 Trace
 
-### Ollama
-
-配置：
-
-```text
-configs/react_baseline.ollama.example.yaml
-```
-
-先启动 Ollama：
-
-```powershell
-ollama serve
-```
-
-小批量测试：
-
-```powershell
-python -m uv run dabench run-benchmark --config configs/react_baseline.ollama.example.yaml --limit 5
-```
-
-Ollama 当前更适合作为本地连通性和 prompt regression 后端。真正追求 benchmark 分数时，优先使用 DeepSeek / OpenAI-compatible 后端。
-
-## 查看 trace
-
-trace 文件位置：
+trace 路径：
 
 ```text
 artifacts/runs/<run_id>/<task_id>/trace.json
@@ -390,31 +288,34 @@ Get-ChildItem artifacts\runs -Directory |
   Select-Object -First 1
 ```
 
-查看某个 trace：
+查看某个任务的 action 流：
 
 ```powershell
-Get-Content artifacts\runs\<run_id>\task_89\trace.json
+python -m uv run python -c "import json; d=json.load(open('artifacts/runs/<run_id>/task_1/trace.json', encoding='utf-8')); print([s.get('action') for s in d.get('steps', [])])"
 ```
 
-只看 action 流：
+trace 中重点看：
 
-```powershell
-python -m uv run python -c "import json; d=json.load(open('artifacts/runs/<run_id>/task_89/trace.json', encoding='utf-8')); print([s.get('action') for s in d.get('steps', [])])"
-```
+- `_route_decision`
+- `_route_decision.task_profile`
+- `_verification`
+- `_guided_retry`
+- `_post_process`
+- `_failure_analysis`
 
 ## 测试
 
-Windows PowerShell 下建议先禁用全局 pytest 插件，避免用户环境里的插件版本冲突：
+推荐在 PowerShell 中运行：
 
 ```powershell
 $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
-python -m uv run --extra dev python -m pytest
+python -m uv run --extra dev python -m pytest -q
 ```
 
 当前期望结果：
 
 ```text
-40 passed, 1 skipped
+66 passed, 1 skipped
 ```
 
 真实模型 smoke test：
@@ -429,15 +330,10 @@ python -m uv run --extra dev python -m pytest tests/test_real_model_smoke.py -q
 
 ## Docker / 提交入口
 
-`main.py` 是 submission-style 入口，读取：
+`main.py` 是 submission-style 入口：
 
 ```text
 /input
-```
-
-写出：
-
-```text
 /output
 /logs/runtime.log
 ```
@@ -450,13 +346,13 @@ MODEL_API_URL
 MODEL_API_KEY
 ```
 
-本地构建示例：
+构建：
 
 ```powershell
 docker build -t datapilot .
 ```
 
-运行示例：
+运行：
 
 ```powershell
 docker run --rm `
@@ -469,7 +365,7 @@ docker run --rm `
   datapilot
 ```
 
-## 仓库提交注意事项
+## 不要提交的内容
 
 以下内容不应提交：
 
@@ -479,7 +375,7 @@ docker run --rm `
 - `artifacts/runs/`
 - `.pytest_cache/`
 - `__pycache__/`
-- 本地 `configs/react_baseline.local.yaml`
+- `configs/react_baseline.local.yaml`
 
 仓库保留：
 
@@ -490,25 +386,16 @@ docker run --rm `
 - `uv.lock`
 - `artifacts/.gitkeep`
 
-## 项目结构
+## 当前建议工作流
 
-```text
-.
-  configs/                  示例 YAML 配置
-  docs/                     RUNBOOK 和实验记录
-  scripts/                  本地辅助脚本
-  src/data_agent_baseline/  主包
-    agents/                 模型适配器和 Agent runtime
-    benchmark/              数据集 schema 和 loader
-    run/                    runner、verification、repair、analysis
-    tools/                  工具系统
-  tests/                    回归测试
-  evaluate.py               本地 evaluator
-  main.py                   submission-style 入口
-  pyproject.toml            项目依赖和配置
-  uv.lock                   锁定依赖
-```
+现在不建议继续盲目加 repair。更稳的流程是：
 
-## 当前一句话总结
+1. 跑一轮 `--limit 20` benchmark。
+2. 评测并生成 `evaluation.json`。
+3. 运行 `dabench mine-failures`。
+4. 只根据 recurring failure modes 补通用 verifier / solver。
+5. 再跑 ablation，对比无 repair、通用 repair、全量 repair 的效果。
 
-DataPilot 现在已经具备完整 DataAgent 架构，能够稳定完成本地任务运行、工具调用、答案生成、评估、trace 复盘和确定性修复。下一阶段的重点不是继续搭骨架，而是围绕 medium / hard 任务提升性能、语义稳定性和 benchmark 分数。
+## 一句话总结
+
+DataPilot 当前已经具备完整 DataAgent 闭环。下一阶段的重点不是继续堆公开集特例，而是通过任务路由、语义校验、guided retry、failure mining 和通用 pattern solver，提高 medium / hard 任务上的稳定性和泛化能力。
