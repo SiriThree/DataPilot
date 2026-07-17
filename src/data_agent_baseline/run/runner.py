@@ -424,6 +424,19 @@ def _maybe_run_guided_retry(
     model,
 ) -> TaskRunArtifacts:
     original_trace = _load_trace(artifact.trace_path)
+    if not config.run.enable_guided_retry:
+        original_trace["_guided_retry"] = {
+            "decision": {
+                "should_retry": False,
+                "reason": "guided retry disabled by run.enable_guided_retry",
+                "trigger_codes": [],
+                "retry_hint": "",
+            },
+            "attempted": False,
+        }
+        _write_json(artifact.trace_path, original_trace)
+        return artifact
+
     decision = build_guided_retry_decision(
         original_trace=original_trace,
         prediction_path=artifact.prediction_csv_path,

@@ -90,6 +90,7 @@ class RunConfig:
     run_id: str | None = None
     max_workers: int = 4
     task_timeout_seconds: int = 600
+    enable_guided_retry: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,5 +143,6 @@ def load_app_config(config_path: Path) -> AppConfig:
         run_id=run_id,
         max_workers=int(run_payload.get("max_workers", run_defaults.max_workers)),
         task_timeout_seconds=int(run_payload.get("task_timeout_seconds", run_defaults.task_timeout_seconds)),
+        enable_guided_retry=bool(run_payload.get("enable_guided_retry", run_defaults.enable_guided_retry)),
     )
     return AppConfig(dataset=dataset_config, agent=agent_config, run=run_config)

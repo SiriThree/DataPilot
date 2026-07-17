@@ -23,6 +23,7 @@ agent:
   api_key:
 run:
   output_dir: artifacts/runs
+  enable_guided_retry: false
 """,
         encoding="utf-8",
     )
@@ -33,6 +34,7 @@ run:
     assert config.agent.model == "qwen2.5:14b"
     assert config.agent.api_base == "http://localhost:11434"
     assert config.agent.api_key == ""
+    assert config.run.enable_guided_retry is False
 
 
 def test_build_model_adapter_selects_ollama() -> None:

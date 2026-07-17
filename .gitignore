@@ -42,6 +42,8 @@ configs/*
 !configs/react_baseline.example.yaml
 !configs/react_baseline.deepseek.example.yaml
 !configs/react_baseline.ollama.example.yaml
+!configs/react_baseline.deepseek.fast.yaml
+!configs/react_baseline.ollama.fast.yaml
 
 # OS / notebook noise
 .DS_Store
