@@ -4,7 +4,17 @@ DataPilot 是一个面向 KDD Cup 2026 DataAgent-Bench 的本地 DataAgent 项�
 
 当前项目已经不只是 starter baseline，而是一个具备本地闭环的 DataAgent 原型：包括模型网关、任务路由、ReAct / Multi-Agent 执行、工具系统、验证链、guided retry、确定性 repair、failure mining 和回归测试。
 
+## 当前重点
 
+
+我们现在的优化方向已经从“补单个失败任务”转向“提升泛化能力”：
+
+- 用 `task_profile` 识别任务类型，例如 `aggregation`、`rank_lookup`、`threshold_count`、`ratio_or_percentage`。
+- 用 `StrategyPolicy` 按 difficulty、route 和 task_profile 选择执行模式、步数预算、retry 强度和 decomposer 开关。
+- guided retry 根据任务类型生成更具体的重试策略。
+- deterministic repair 按 reasoning pattern 组织，而不是按公开集领域命名。
+- failure mining 自动聚类低分任务，并给出下一步开发建议。
+- 避免继续堆 public demo 特例，优先抽象通用 verifier / solver。
 
 ## 项目能做什么
 
@@ -61,6 +71,7 @@ artifacts/runs/<run_id>/failure_mining.md
   -> 配置加载
   -> 模型网关
   -> 任务路由和 task_profile
+  -> difficulty-aware StrategyPolicy
   -> ReAct / Multi-Agent 执行循环
   -> 工具系统
   -> prediction.csv
@@ -105,6 +116,26 @@ profile_context -> execute_data_sql -> execute_python -> answer
 
 对于大 CSV，路由会优先提示使用 DuckDB SQL，避免直接 `pandas.read_csv` 全表读取。
 
+
+## 难度自适应策略
+
+`src/data_agent_baseline/run/difficulty_policy.py` 会把 `difficulty + route + task_profile` 映射为 `StrategyPolicy`：
+
+```text
+easy     -> easy_fast_react / easy_guarded
+medium   -> medium_planner_executor
+hard     -> hard_multi_agent
+extreme  -> extreme_task_graph_ready
+```
+
+当前已经落地的策略包括：
+
+- Easy 简单 SQL/Python 任务走轻量 ReAct，关闭 decomposer 和 guided retry，默认 12 步预算。
+- Medium 保留 planner / executor / verifier / debugger，但不做递归分解，预算约 20-24 步。
+- Hard 启用更强 multi-agent 策略和 decomposer 元信息，预算约 32-40 步。
+- Extreme 预留更大预算和 DAG/subtask execution 扩展空间，预算约 48-60 步。
+
+注意：Hard/Extreme 的真正子任务 DAG 调度仍是后续工作；当前阶段先统一策略、预算、trace 记录和执行器开关。
 
 ## 安装
 
@@ -283,7 +314,7 @@ python -m uv run --extra dev python -m pytest -q
 当前期望结果：
 
 ```text
-66 passed, 1 skipped
+70 passed, 1 skipped
 ```
 
 真实模型 smoke test：

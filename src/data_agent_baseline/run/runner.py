@@ -17,6 +17,12 @@ from data_agent_baseline.agents.multi_agent import MultiAgentLoop, MultiAgentCon
 from data_agent_baseline.agents.react import ReActAgent, ReActAgentConfig
 from data_agent_baseline.benchmark.dataset import DABenchPublicDataset
 from data_agent_baseline.config import AgentConfig, AppConfig
+from data_agent_baseline.run.difficulty_policy import (
+    StrategyPolicy,
+    build_strategy_policy,
+    build_strategy_prompt_hint,
+    strategy_policy_to_dict,
+)
 from data_agent_baseline.run.failure_analysis import analyze_task_failure, failure_analysis_to_dict
 from data_agent_baseline.run.guided_retry import (
     attempt_selection_to_dict,
@@ -196,20 +202,31 @@ def _run_single_task_core(
     model=None,
     tools: ToolRegistry | None = None,
     route_hint: str = "",
+    strategy_policy: StrategyPolicy | None = None,
 ) -> tuple[dict[str, Any], str]:
     public_dataset = DABenchPublicDataset(config.dataset.root_path)
     task = public_dataset.get_task(task_id)
 
     if config.agent.use_multi_agent:
+        use_decomposer = (
+            strategy_policy.use_decomposer
+            if strategy_policy is not None
+            else (task.difficulty or "medium") in ("hard", "extreme")
+        )
         agent = MultiAgentLoop(
             model=model or build_model_adapter(config),
             tools=tools or create_default_tool_registry(),
             config=MultiAgentConfig(
                 max_steps=config.agent.max_steps,
-                use_verifier=True,
-                use_router=True,
-                use_debugger=True,
-                use_decomposer=(task.difficulty or "medium") in ("hard", "extreme"),
+                use_verifier=strategy_policy.use_verifier if strategy_policy is not None else True,
+                use_router=strategy_policy.use_router if strategy_policy is not None else True,
+                use_debugger=strategy_policy.use_debugger if strategy_policy is not None else True,
+                use_decomposer=use_decomposer,
+                verifier_frequency=(
+                    strategy_policy.verifier_frequency
+                    if strategy_policy is not None
+                    else "every_compute"
+                ),
             ),
             route_hint=route_hint,
             difficulty=task.difficulty or "medium",
@@ -225,11 +242,21 @@ def _run_single_task_core(
     return run_result.to_dict(), task.question
 
 
-def _run_single_task_with_timeout(*, task_id: str, config: AppConfig,
-                                   route_hint: str = "") -> tuple[dict[str, Any], str]:
+def _run_single_task_with_timeout(
+    *,
+    task_id: str,
+    config: AppConfig,
+    route_hint: str = "",
+    strategy_policy: StrategyPolicy | None = None,
+) -> tuple[dict[str, Any], str]:
     timeout_seconds = config.run.task_timeout_seconds
     if timeout_seconds <= 0:
-        return _run_single_task_core(task_id=task_id, config=config, route_hint=route_hint)
+        return _run_single_task_core(
+            task_id=task_id,
+            config=config,
+            route_hint=route_hint,
+            strategy_policy=strategy_policy,
+        )
 
     # Use Thread instead of multiprocessing.Process to avoid macOS spawn/fork issues
     import threading
@@ -237,7 +264,12 @@ def _run_single_task_with_timeout(*, task_id: str, config: AppConfig,
 
     def _target() -> None:
         try:
-            run_result, question = _run_single_task_core(task_id=task_id, config=config, route_hint=route_hint)
+            run_result, question = _run_single_task_core(
+                task_id=task_id,
+                config=config,
+                route_hint=route_hint,
+                strategy_policy=strategy_policy,
+            )
             result_container["ok"] = True
             result_container["run_result"] = run_result
             result_container["question"] = question
@@ -385,15 +417,22 @@ def _run_attempt(
     route_hint: str,
     model,
     tools: ToolRegistry | None,
+    strategy_policy: StrategyPolicy | None = None,
 ) -> tuple[dict[str, Any], str]:
     if model is None and tools is None:
-        return _run_single_task_with_timeout(task_id=task_id, config=config, route_hint=route_hint)
+        return _run_single_task_with_timeout(
+            task_id=task_id,
+            config=config,
+            route_hint=route_hint,
+            strategy_policy=strategy_policy,
+        )
     return _run_single_task_core(
         task_id=task_id,
         config=config,
         model=model,
         tools=tools or create_default_tool_registry(),
         route_hint=route_hint,
+        strategy_policy=strategy_policy,
     )
 
 
@@ -418,6 +457,8 @@ def _maybe_run_guided_retry(
     run_output_dir: Path,
     route_hint: str,
     route_decision_payload: dict[str, Any],
+    strategy_policy_payload: dict[str, Any],
+    strategy_policy: StrategyPolicy | None,
     config: AppConfig,
     effective_max_steps: int,
     started_at: float,
@@ -488,9 +529,11 @@ def _maybe_run_guided_retry(
         route_hint=retry_route_hint,
         model=model,
         tools=retry_tools,
+        strategy_policy=strategy_policy,
     )
     retry_run_result["e2e_elapsed_seconds"] = round(perf_counter() - retry_started, 3)
     retry_run_result["_route_decision"] = route_decision_payload
+    retry_run_result["_strategy_policy"] = strategy_policy_payload
 
     retry_artifact = _write_task_outputs(
         task_id,
@@ -543,6 +586,7 @@ def _maybe_run_guided_retry(
         final_trace["_guided_retry"] = retry_payload
         final_trace["_selected_attempt"] = "retry"
         final_trace["_route_decision"] = route_decision_payload
+        final_trace["_strategy_policy"] = strategy_policy_payload
         _write_json(artifact.trace_path, final_trace)
         return TaskRunArtifacts(
             task_id=artifact.task_id,
@@ -585,18 +629,21 @@ def run_single_task(
         context_dir=task.context_dir,
         difficulty=difficulty,
     )
-    route_hint = build_route_prompt_hint(route_decision)
+    strategy_policy = build_strategy_policy(
+        difficulty=difficulty,
+        route_decision=route_decision,
+        configured_max_steps=config.agent.max_steps,
+        configured_use_multi_agent=config.agent.use_multi_agent,
+        configured_enable_guided_retry=config.run.enable_guided_retry,
+    )
+    strategy_policy_payload = strategy_policy_to_dict(strategy_policy)
+    route_hint = (
+        f"{build_route_prompt_hint(route_decision)}\n\n"
+        f"{build_strategy_prompt_hint(strategy_policy)}"
+    )
 
-    # ── Route-based adaptive max_steps ──
-    max_steps_budget = max(config.agent.max_steps, 1)
-    route_max_steps = {
-        "sql_first": max(20, max_steps_budget),
-        "python_first": max(20, max_steps_budget),
-        "hybrid_sql_python": max(20, max_steps_budget),
-        "hybrid_doc_table": max(20, max_steps_budget),
-        "document_first": max(20, max_steps_budget),
-    }
-    effective_max_steps = route_max_steps.get(route_decision.route, config.agent.max_steps)
+    # ── Difficulty/route/task-profile strategy ──
+    effective_max_steps = strategy_policy.max_steps
     adapted_config = AppConfig(
         dataset=config.dataset,
         agent=AgentConfig(
@@ -606,9 +653,15 @@ def run_single_task(
             api_key=config.agent.api_key,
             max_steps=effective_max_steps,
             temperature=config.agent.temperature,
-            use_multi_agent=config.agent.use_multi_agent,
+            use_multi_agent=strategy_policy.use_multi_agent,
         ),
-        run=config.run,
+        run=type(config.run)(
+            output_dir=config.run.output_dir,
+            run_id=config.run.run_id,
+            max_workers=config.run.max_workers,
+            task_timeout_seconds=config.run.task_timeout_seconds,
+            enable_guided_retry=strategy_policy.enable_guided_retry,
+        ),
     )
 
     question = task.question
@@ -618,10 +671,12 @@ def run_single_task(
         route_hint=route_hint,
         model=model,
         tools=tools,
+        strategy_policy=strategy_policy,
     )
     run_result["e2e_elapsed_seconds"] = round(perf_counter() - started_at, 3)
     route_decision_payload = route_to_dict(route_decision)
     run_result["_route_decision"] = route_decision_payload
+    run_result["_strategy_policy"] = strategy_policy_payload
     artifact = _write_task_outputs(task_id, run_output_dir, run_result, question, task_dir=task.task_dir)
     # Cleanup stateful interpreter to free memory
     remove_interpreter(task_id)
@@ -633,6 +688,8 @@ def run_single_task(
         run_output_dir=run_output_dir,
         route_hint=route_hint,
         route_decision_payload=route_decision_payload,
+        strategy_policy_payload=strategy_policy_payload,
+        strategy_policy=strategy_policy,
         config=adapted_config,
         effective_max_steps=effective_max_steps,
         started_at=started_at,
