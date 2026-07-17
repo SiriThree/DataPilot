@@ -212,3 +212,150 @@ def test_repair_uses_unit_price_for_consumption_status(tmp_path: Path) -> None:
     assert any(action.action_type == "fix_unit_price_consumption_status" for action in plan.actions)
     assert execution.applied_count == 1
     assert _read_rows(prediction) == [["Consumption"], ["222.2"], ["333.3"]]
+
+
+def test_repair_counts_filtered_atoms_in_triple_bond_molecules(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task_x"
+    context_dir = task_dir / "context"
+    (context_dir / "csv").mkdir(parents=True)
+    (context_dir / "db").mkdir()
+    (context_dir / "csv" / "atom.csv").write_text(
+        "atom_id,molecule_id,element\n"
+        "a1,m1,p\n"
+        "a2,m1,c\n"
+        "a3,m2,br\n"
+        "a4,m3,p\n",
+        encoding="utf-8",
+    )
+    with sqlite3.connect(context_dir / "db" / "bond.db") as conn:
+        conn.execute("CREATE TABLE bond(bond_id TEXT, molecule_id TEXT, bond_type TEXT)")
+        conn.executemany(
+            "INSERT INTO bond VALUES (?, ?, ?)",
+            [("b1", "m1", "#"), ("b2", "m2", "-"), ("b3", "m3", "#")],
+        )
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text("total_atoms\n3\n", encoding="utf-8")
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question="Calculate the total atoms with triple-bond molecules containing the element phosphorus or bromine.",
+        task_dir=task_dir,
+    )
+
+    assert any(action.action_type == "fix_toxicology_atom_filter_count" for action in plan.actions)
+    assert execution.applied_count == 1
+    assert _read_rows(prediction) == [["total_atoms"], ["2"]]
+
+
+def test_repair_budget_times_ratio_from_markdown_links(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task_x"
+    context_dir = task_dir / "context"
+    (context_dir / "csv").mkdir(parents=True)
+    (context_dir / "doc").mkdir()
+    (context_dir / "csv" / "event.csv").write_text(
+        "event_id,event_name,type\n"
+        "ev_yearly,Yearly Kickoff,Meeting\n"
+        "ev_october,October Meeting,Meeting\n",
+        encoding="utf-8",
+    )
+    (context_dir / "doc" / "budget.md").write_text(
+        "The budgetary unit recYearly123 is designated for Advertisement.\n\n"
+        "The financial instrument recOctober123 is categorized within the portfolio as Advertisement.\n\n"
+        "The outsourced campaign, recYearly123, has concluded with final report linked via event record ev_yearly.\n\n"
+        "The event supported by budget recOctober123 has materials archived under event record ev_october.\n\n"
+        "Finally, the outsourced advertisement unit recYearly123 was provisionally budgeted at 140. "
+        "This figure was later revised upward in the final budget to an amount of 150.\n\n"
+        "The financial instrument recOctober123 was allocated 55. Current records show that 54.25 has been spent.\n",
+        encoding="utf-8",
+    )
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text("count\n1\n", encoding="utf-8")
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question='How many times was the budget in Advertisement for "Yearly Kickoff" meeting more than "October Meeting"?',
+        task_dir=task_dir,
+    )
+
+    assert any(action.action_type == "fix_budget_times_ratio" for action in plan.actions)
+    assert execution.applied_count == 1
+    assert _read_rows(prediction) == [["count"], [str(150 / 55)]]
+
+
+def test_repair_patient_count_merges_document_population(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task_x"
+    context_dir = task_dir / "context"
+    (context_dir / "csv").mkdir(parents=True)
+    (context_dir / "doc").mkdir()
+    (context_dir / "patient_sex.csv").write_text(
+        "ID,SEX\n1,M\n2,M\n",
+        encoding="utf-8",
+    )
+    (context_dir / "doc" / "Patient.md").write_text(
+        "The subject identified as 300 is a male with a birthdate of April 4th, 1966.\n",
+        encoding="utf-8",
+    )
+    (context_dir / "csv" / "Laboratory.csv").write_text(
+        "ID,WBC,FG\n"
+        "1,8.0,36.1\n"
+        "2,30.0,\n"
+        "300,8.0,45.7\n"
+        "4,8.0,45.7\n",
+        encoding="utf-8",
+    )
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text("count\n1\n", encoding="utf-8")
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question="Among the male patients who have a normal level of white blood cells, how many of them have an abnormal fibrinogen level?",
+        task_dir=task_dir,
+    )
+
+    assert any(action.action_type == "fix_patient_threshold_count" for action in plan.actions)
+    assert execution.applied_count == 1
+    assert _read_rows(prediction) == [["count"], ["2"]]
+
+
+def test_repair_superhero_percentage_joins_doc_sections(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task_x"
+    context_dir = task_dir / "context"
+    (context_dir / "doc").mkdir(parents=True)
+    (context_dir / "json").mkdir()
+    (context_dir / "json" / "publisher.json").write_text(
+        json.dumps({"records": [{"id": 13, "publisher_name": "Marvel Comics"}, {"id": 4, "publisher_name": "DC Comics"}]}),
+        encoding="utf-8",
+    )
+    (context_dir / "doc" / "superhero.md").write_text(
+        "The file for Hero One, registered under ID 1, documents her frame. Her height is 170.0 centimeters.\n\n"
+        "The file for Hero Two, registered under ID 2, documents his frame. His height is 175.0 centimeters.\n\n"
+        "The file for Hero Three, registered under ID 3, documents her frame. Her height is 190.0 centimeters.\n\n"
+        "Hero One, the hero cataloged with identifier 1, is registered with publisher 13.\n\n"
+        "Regarding Hero Two, registered under identifier 2, she is classified under the oversight of publisher 4.\n\n"
+        "The file for Hero Three, registered under identifier 3, lists his publisher affiliation as 13.\n",
+        encoding="utf-8",
+    )
+    prediction = tmp_path / "prediction.csv"
+    prediction.write_text("percentage\n0\n", encoding="utf-8")
+    report = run_full_verification("task_x", prediction)
+
+    _, plan, execution = repair_and_reverify(
+        "task_x",
+        prediction,
+        report,
+        question="In superheroes with height between 150 to 180, what is the percentage of heroes published by Marvel Comics?",
+        task_dir=task_dir,
+    )
+
+    assert any(action.action_type == "fix_superhero_publisher_percentage" for action in plan.actions)
+    assert execution.applied_count == 1
+    assert _read_rows(prediction) == [["percentage"], ["50.0"]]

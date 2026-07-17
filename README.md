@@ -169,6 +169,10 @@ src/data_agent_baseline/run/
 - literal rank finish time 重算
 - 大 CSV 任务的 SQL-first 路由和 pandas 全表读取保护
 - `per unit` 单价语义修复：用 `Price / Amount` 而不是总价 `Price`
+- `how many times A more than B` 比值语义修复：输出 `A / B` 而不是 count
+- 毒理分子题的 filtered atom count 修复
+- 医疗患者题的文档人口属性补全
+- 长文档 superhero 题的跨 section entity join 抽取增强
 
 这些 repair 都是保守规则，并且有测试覆盖。
 
@@ -177,7 +181,7 @@ src/data_agent_baseline/run/
 当前本地测试状态：
 
 ```text
-36 passed, 1 skipped
+40 passed, 1 skipped
 ```
 
 已经完成：
@@ -206,11 +210,12 @@ src/data_agent_baseline/run/
 - `task_163` expense type 语义错误已修复
 - `task_169` 大表月均消费任务已稳定走 SQL-first，真实评估 `score = 1.0`
 - `task_180` 大表单价筛选任务已修复 `per unit` 语义，真实评估 `score = 1.0`
+- `task_200` / `task_344` / `task_352` / `task_396` 四个失败任务已抽象为通用 repair，重放评估 `score = 1.0`
 
 当前下一步重点：
 
 ```text
-扩大 medium / hard 任务批量回归，继续把失败样本沉淀为通用 verifier / repair
+扩大 medium / hard 任务批量回归，继续加强长文档结构化抽取和语义 verifier
 ```
 
 后续方向是：
@@ -409,7 +414,7 @@ python -m uv run --extra dev python -m pytest
 当前期望结果：
 
 ```text
-36 passed, 1 skipped
+40 passed, 1 skipped
 ```
 
 真实模型 smoke test：

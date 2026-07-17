@@ -23,6 +23,7 @@ FIELD_ALIASES = {
     "height": ["height", "standing height", "recorded height", "height_cm"],
     "weight": ["weight", "body weight", "recorded weight", "weight_kg"],
     "publisher": ["publisher", "publisher affiliation", "publisher_id", "publisher code"],
+    "publisher affiliation": ["publisher", "publisher affiliation", "publisher_id", "publisher code"],
     "alignment": ["alignment", "moral alignment", "alignment_id"],
     "gender": ["gender", "sex", "gender_id"],
     "birth": ["birth", "born", "birth year", "year of birth"],
@@ -114,6 +115,12 @@ def _field_pattern_value(sentence: str, field: str, terms: list[str]) -> tuple[f
             rf"{term_pattern}\s+({_number_pattern()})",
             rf"({_number_pattern()})\s*(?:centimeters|kilograms|kg|cm)\b[^.?!;]{{0,80}}?{term_pattern}",
         ]
+        if term in {"publisher", "publisher affiliation", "publisher_id", "publisher code"}:
+            direct_patterns.extend([
+                rf"(?:registered|classified|documented|listed|affiliated|on\s+record|under)[^.?!;]{{0,120}}?{term_pattern}\s+({_number_pattern()})",
+                rf"(?:jurisdiction|oversight)[^.?!;]{{0,80}}?of\s+{term_pattern}\s+({_number_pattern()})",
+                rf"{term_pattern}[^.?!;]{{0,40}}?(?:confirmed|finalized)[^.?!;]{{0,80}}?(?:as|to)\s+({_number_pattern()})",
+            ])
         for pattern in direct_patterns:
             match = re.search(pattern, sentence, flags=re.IGNORECASE)
             if match:

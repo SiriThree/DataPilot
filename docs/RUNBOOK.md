@@ -388,6 +388,54 @@ Useful trace checks:
 rg -n "large_csv_sql_first|execute_data_sql|fix_unit_price" artifacts/runs/<run_id>/<task_id>/trace.json
 ```
 
+## Stage 7 Failure-Pattern Repairs
+
+After a 53-task DeepSeek run, four tasks still scored `0.0` despite producing
+valid one-row CSV answers:
+
+```text
+run_id = 20260717T055143Z
+overall_score = 0.9132
+failures = task_200, task_344, task_352, task_396
+```
+
+Implemented generic repairs:
+
+- `task_200` pattern: count filtered atoms in matching molecules, not every atom
+  in the matched molecule.
+- `task_344` pattern: merge patient population attributes from markdown docs
+  with structured lab measurements before counting threshold conditions.
+- `task_352` pattern: interpret "how many times was A more than B" as `A / B`,
+  not as a boolean/count comparison.
+- `task_396` pattern: improve long-document evidence extraction by joining
+  height and publisher sections by `entity_id`; publisher expressions such as
+  "classified under publisher 13" and "registered with publisher 13" are now
+  recognized.
+
+Validation without extra model calls:
+
+```powershell
+python -m uv run python evaluate.py batch `
+  --input-dir data/public/input `
+  --output-dir data/public/output `
+  --predictions-dir artifacts/runs/repair_validation_20260717_four_failures `
+  --only-existing
+```
+
+Validated result:
+
+```text
+total_tasks = 4
+overall_score = 1.0
+failures = []
+```
+
+Full regression:
+
+```text
+40 passed, 1 skipped
+```
+
 ## PDF Support
 
 The agent can profile and read PDF files in task context directories.

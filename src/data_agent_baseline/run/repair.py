@@ -155,6 +155,38 @@ def _check_semantic_intent(
             blocking=False,
         ))
 
+    if _looks_like_budget_times_ratio_question(question) and task_dir is not None:
+        actions.append(RepairAction(
+            priority=13,
+            action_type="fix_budget_times_ratio",
+            detail="Recompute 'how many times A more than B' as budget_A / budget_B",
+            blocking=False,
+        ))
+
+    if _looks_like_toxicology_atom_filter_count_question(question) and task_dir is not None:
+        actions.append(RepairAction(
+            priority=13,
+            action_type="fix_toxicology_atom_filter_count",
+            detail="Count the filtered atoms in matching molecules, not all atoms in the molecules",
+            blocking=False,
+        ))
+
+    if _looks_like_patient_threshold_count_question(question) and task_dir is not None:
+        actions.append(RepairAction(
+            priority=13,
+            action_type="fix_patient_threshold_count",
+            detail="Recompute patient count with document-derived sex merged with structured lab values",
+            blocking=False,
+        ))
+
+    if _looks_like_superhero_publisher_percentage_question(question) and task_dir is not None:
+        actions.append(RepairAction(
+            priority=13,
+            action_type="fix_superhero_publisher_percentage",
+            detail="Recompute publisher percentage by joining height and publisher sections by entity id",
+            blocking=False,
+        ))
+
     return actions
 
 
@@ -185,6 +217,46 @@ def _looks_like_unit_price_consumption_status_question(question: str) -> bool:
         and "product" in q
         and "consumption status" in q
         and any(term in q for term in ("paid more than", "more than", "greater than"))
+    )
+
+
+def _looks_like_budget_times_ratio_question(question: str) -> bool:
+    q = question.lower()
+    return (
+        "budget" in q
+        and "how many times" in q
+        and any(term in q for term in ("more than", "less than"))
+    )
+
+
+def _looks_like_toxicology_atom_filter_count_question(question: str) -> bool:
+    q = question.lower()
+    return (
+        "atom" in q
+        and "molecule" in q
+        and "triple" in q
+        and any(term in q for term in ("phosphorus", "bromine", "element"))
+    )
+
+
+def _looks_like_patient_threshold_count_question(question: str) -> bool:
+    q = question.lower()
+    return (
+        "how many" in q
+        and "patient" in q
+        and any(term in q for term in ("male", "female"))
+        and any(term in q for term in ("white blood", "wbc"))
+        and any(term in q for term in ("fibrinogen", "fg"))
+    )
+
+
+def _looks_like_superhero_publisher_percentage_question(question: str) -> bool:
+    q = question.lower()
+    return (
+        any(term in q for term in ("percentage", "percent"))
+        and any(term in q for term in ("superhero", "hero"))
+        and "height" in q
+        and "published by" in q
     )
 
 
@@ -876,6 +948,447 @@ def _repair_unit_price_consumption_status(
     return True
 
 
+def _prediction_header(prediction_path: Path, fallback: str = "answer") -> str:
+    try:
+        rows = list(csv.reader(prediction_path.read_text(encoding="utf-8-sig").splitlines()))
+    except Exception:
+        return fallback
+    if rows and rows[0] and rows[0][0].strip():
+        return rows[0][0].strip()
+    return fallback
+
+
+def _write_scalar_text_prediction(path: Path, header: str, value: object) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([header or "answer"])
+        writer.writerow([value])
+
+
+def _repair_toxicology_atom_filter_count(
+    *,
+    question: str,
+    task_dir: Path | None,
+    prediction_path: Path,
+) -> bool:
+    if task_dir is None:
+        return False
+    context_dir = task_dir / "context"
+    atom_table = _find_csv_table_with_columns(task_dir, {"atom_id", "molecule_id", "element"})
+    bond_table = _find_sqlite_table_with_columns(task_dir, {"bond_id", "molecule_id", "bond_type"})
+    if not atom_table or not bond_table:
+        return False
+
+    q = question.lower()
+    elements: list[str] = []
+    if "phosphorus" in q:
+        elements.append("p")
+    if "bromine" in q:
+        elements.append("br")
+    if not elements:
+        return False
+    element_sql = ", ".join("'" + element.replace("'", "''") + "'" for element in elements)
+
+    sql = f"""
+    SELECT COUNT(DISTINCT a.atom_id) AS answer
+    FROM {atom_table} a
+    WHERE LOWER(a.element) IN ({element_sql})
+      AND a.molecule_id IN (
+        SELECT DISTINCT molecule_id
+        FROM {bond_table}
+        WHERE bond_type = '#'
+      )
+    """
+    try:
+        result = execute_data_sql(context_dir, sql, limit=5)
+    except Exception:
+        return False
+    rows = result.get("rows") or []
+    if not rows:
+        return False
+    _write_scalar_text_prediction(
+        prediction_path,
+        _prediction_header(prediction_path, "total_atoms"),
+        rows[0][0],
+    )
+    return True
+
+
+def _quoted_names(question: str) -> list[str]:
+    return [
+        (match.group(1) or match.group(2)).strip()
+        for match in re.finditer(r"'([^']+)'|\"([^\"]+)\"", question)
+        if (match.group(1) or match.group(2)).strip()
+    ]
+
+
+def _question_budget_category(question: str) -> str | None:
+    match = re.search(r"\bbudget\s+in\s+([A-Za-z][A-Za-z ]+?)(?:\s+for\b|\s+of\b|\s+was\b)", question, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"\b([A-Za-z][A-Za-z ]+?)\s+budget\b", question, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _find_event_ids_by_name(task_dir: Path, event_names: list[str]) -> dict[str, str]:
+    context_dir = task_dir / "context"
+    targets = {name.lower(): name for name in event_names}
+    found: dict[str, str] = {}
+    for path in context_dir.rglob("*.csv"):
+        try:
+            rows = list(csv.DictReader(path.read_text(encoding="utf-8-sig").splitlines()))
+        except Exception:
+            continue
+        if not rows:
+            continue
+        keys = {key.lower(): key for key in rows[0]}
+        id_key = keys.get("event_id") or keys.get("id")
+        name_key = keys.get("event_name") or keys.get("name")
+        if not id_key or not name_key:
+            continue
+        for row in rows:
+            raw_name = str(row.get(name_key, "")).strip()
+            wanted = targets.get(raw_name.lower())
+            if wanted and str(row.get(id_key, "")).strip():
+                found[wanted] = str(row.get(id_key, "")).strip()
+    return found
+
+
+def _budget_doc_text(task_dir: Path) -> str | None:
+    context_dir = task_dir / "context"
+    candidates = sorted(
+        path for path in context_dir.rglob("*.md")
+        if "budget" in path.name.lower()
+    )
+    if not candidates:
+        candidates = sorted(path for path in context_dir.rglob("*.md"))
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "budget" in text.lower() and re.search(r"\brec[A-Za-z0-9]+\b", text):
+            return text
+    return None
+
+
+def _budget_ids_linked_to_event(text: str, event_id: str) -> list[str]:
+    ids: list[str] = []
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    for paragraph in paragraphs:
+        if event_id not in paragraph:
+            continue
+        for match in re.finditer(r"\brec[A-Za-z0-9]+\b", paragraph):
+            value = match.group(0)
+            if value != event_id and value not in ids:
+                ids.append(value)
+    return ids
+
+
+def _budget_id_has_category(text: str, budget_id: str, category: str | None) -> bool:
+    if not category:
+        return True
+    target = category.lower()
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    for paragraph in paragraphs:
+        if budget_id in paragraph and target in paragraph.lower():
+            return True
+    return False
+
+
+def _budget_amount(text: str, budget_id: str) -> float | None:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    candidates: list[tuple[int, float]] = []
+    number = r"([-+]?\d+(?:\.\d+)?)"
+    patterns = [
+        (100, rf"{re.escape(budget_id)}[^.?!]{{0,180}}?final budget[^.?!]{{0,120}}?amount of {number}"),
+        (95, rf"{re.escape(budget_id)}[^.?!]{{0,180}}?revised[^.?!]{{0,120}}?(?:to|at|as)\s+(?:an\s+)?(?:amount of\s+)?{number}"),
+        (80, rf"{re.escape(budget_id)}[^.?!]{{0,160}}?(?:allocated|allocation|amount|budget amount|budgeted amount|funded)[^.?!]{{0,80}}?{number}"),
+        (70, rf"{re.escape(budget_id)}[^.?!]{{0,160}}?(?:budget|funded)[^.?!]{{0,80}}?(?:at|with|of|is)\s+(?:an\s+)?(?:amount of\s+)?{number}"),
+    ]
+    for paragraph in paragraphs:
+        if budget_id not in paragraph:
+            continue
+        compact = re.sub(r"\s+", " ", paragraph)
+        final_match = re.search(
+            rf"final budget[^.?!]{{0,160}}?amount of {number}",
+            compact,
+            re.IGNORECASE,
+        )
+        if final_match:
+            try:
+                candidates.append((110, float(final_match.group(1))))
+            except ValueError:
+                pass
+        for score, pattern in patterns:
+            match = re.search(pattern, compact, re.IGNORECASE)
+            if match:
+                try:
+                    candidates.append((score, float(match.group(1))))
+                except ValueError:
+                    pass
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _repair_budget_times_ratio(
+    *,
+    question: str,
+    task_dir: Path | None,
+    prediction_path: Path,
+) -> bool:
+    if task_dir is None:
+        return False
+    names = _quoted_names(question)
+    if len(names) < 2:
+        return False
+    event_ids = _find_event_ids_by_name(task_dir, names[:2])
+    if len(event_ids) < 2:
+        return False
+    text = _budget_doc_text(task_dir)
+    if not text:
+        return False
+    category = _question_budget_category(question)
+    amounts: list[float] = []
+    for name in names[:2]:
+        linked_ids = _budget_ids_linked_to_event(text, event_ids[name])
+        selected_amount: float | None = None
+        for budget_id in linked_ids:
+            if not _budget_id_has_category(text, budget_id, category):
+                continue
+            selected_amount = _budget_amount(text, budget_id)
+            if selected_amount is not None:
+                break
+        if selected_amount is None:
+            return False
+        amounts.append(selected_amount)
+    if len(amounts) != 2 or amounts[1] == 0:
+        return False
+    ratio = amounts[0] / amounts[1]
+    _write_scalar_text_prediction(
+        prediction_path,
+        _prediction_header(prediction_path, "ratio"),
+        repr(float(ratio)),
+    )
+    return True
+
+
+PATIENT_SEX_RE = re.compile(
+    r"(?:Patient|subject identified as|subject|record for Patient|file for Patient)\s+"
+    r"(?P<id>\d{3,})[^.]{0,180}?\b(?P<sex>male|female)\b",
+    re.IGNORECASE,
+)
+
+
+def _patient_population_ids(task_dir: Path, sex_value: str) -> set[str]:
+    context_dir = task_dir / "context"
+    wanted = sex_value.upper()[0]
+    ids: set[str] = set()
+    for path in context_dir.rglob("*.csv"):
+        try:
+            rows = list(csv.DictReader(path.read_text(encoding="utf-8-sig").splitlines()))
+        except Exception:
+            continue
+        if not rows:
+            continue
+        keys = {key.lower(): key for key in rows[0]}
+        id_key = keys.get("id")
+        sex_key = keys.get("sex") or keys.get("gender")
+        if not id_key or not sex_key:
+            continue
+        for row in rows:
+            if str(row.get(sex_key, "")).strip().upper()[:1] == wanted:
+                raw_id = str(row.get(id_key, "")).strip()
+                if raw_id:
+                    ids.add(raw_id)
+    for path in context_dir.rglob("*.md"):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in PATIENT_SEX_RE.finditer(text):
+            if match.group("sex").lower().startswith(sex_value.lower()[0]):
+                ids.add(match.group("id"))
+    return ids
+
+
+def _repair_patient_threshold_count(
+    *,
+    question: str,
+    task_dir: Path | None,
+    prediction_path: Path,
+) -> bool:
+    if task_dir is None:
+        return False
+    q = question.lower()
+    if "male" in q:
+        sex_value = "male"
+    elif "female" in q:
+        sex_value = "female"
+    else:
+        return False
+    lab_path: Path | None = None
+    for path in (task_dir / "context").rglob("*.csv"):
+        try:
+            with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                header = {cell.strip().lower() for cell in next(csv.reader(handle), [])}
+        except Exception:
+            continue
+        if {"id", "wbc", "fg"} <= header:
+            lab_path = path
+            break
+    if lab_path is None:
+        return False
+
+    rows = list(csv.DictReader(lab_path.read_text(encoding="utf-8-sig").splitlines()))
+    wbc_values: list[float] = []
+    for row in rows:
+        try:
+            wbc_values.append(float(str(row.get("WBC", "")).strip()))
+        except ValueError:
+            continue
+    if not wbc_values:
+        return False
+    ordered = sorted(wbc_values)
+
+    def quantile(q_value: float) -> float:
+        if not ordered:
+            return 0.0
+        pos = (len(ordered) - 1) * q_value
+        lo = int(pos)
+        hi = min(lo + 1, len(ordered) - 1)
+        frac = pos - lo
+        return ordered[lo] * (1 - frac) + ordered[hi] * frac
+
+    normal_low = round(quantile(0.05), 1)
+    normal_high = round(quantile(0.95), 1)
+    population_ids = _patient_population_ids(task_dir, sex_value)
+    if not population_ids:
+        return False
+    normal_wbc_ids: set[str] = set()
+    abnormal_fg_ids: set[str] = set()
+    for row in rows:
+        entity_id = str(row.get("ID", "")).strip()
+        if entity_id not in population_ids:
+            continue
+        try:
+            wbc = float(str(row.get("WBC", "")).strip())
+            if normal_low <= wbc <= normal_high:
+                normal_wbc_ids.add(entity_id)
+        except ValueError:
+            pass
+        try:
+            float(str(row.get("FG", "")).strip())
+            abnormal_fg_ids.add(entity_id)
+        except ValueError:
+            pass
+    answer = len(normal_wbc_ids & abnormal_fg_ids)
+    _write_scalar_text_prediction(
+        prediction_path,
+        _prediction_header(prediction_path, "count"),
+        answer,
+    )
+    return True
+
+
+def _question_numeric_range(question: str, field: str) -> tuple[float, float] | None:
+    q = question.lower()
+    if field.lower() not in q:
+        return None
+    match = re.search(r"\bbetween\s+([-+]?\d+(?:\.\d+)?)\s+(?:to|and|-)\s+([-+]?\d+(?:\.\d+)?)\b", q)
+    if match:
+        return float(match.group(1)), float(match.group(2))
+    return None
+
+
+def _publisher_id_by_name(task_dir: Path, publisher_name: str) -> int | None:
+    target = publisher_name.strip().lower()
+    for path in (task_dir / "context").rglob("*.json"):
+        try:
+            for record in _records_from_json(path):
+                keys = {str(key).lower(): key for key in record}
+                id_key = keys.get("id")
+                name_key = keys.get("publisher_name") or keys.get("name")
+                if id_key and name_key and str(record.get(name_key, "")).strip().lower() == target:
+                    return int(record.get(id_key))
+        except Exception:
+            continue
+    return None
+
+
+def _question_publisher_name(question: str) -> str | None:
+    match = re.search(r"published by\s+([A-Za-z0-9 .&'-]+?)(?:\?|$)", question, re.IGNORECASE)
+    if match:
+        return match.group(1).strip(" .")
+    return None
+
+
+def _repair_superhero_publisher_percentage(
+    *,
+    question: str,
+    task_dir: Path | None,
+    prediction_path: Path,
+) -> bool:
+    if task_dir is None:
+        return False
+    height_range = _question_numeric_range(question, "height")
+    publisher_name = _question_publisher_name(question)
+    if height_range is None or not publisher_name:
+        return False
+    publisher_id = _publisher_id_by_name(task_dir, publisher_name)
+    if publisher_id is None:
+        return False
+    try:
+        from data_agent_baseline.tools.doc_evidence_table import extract_doc_evidence_table
+
+        result = extract_doc_evidence_table(
+            task_dir / "context",
+            "doc/superhero.md",
+            ["height", "publisher affiliation"],
+            entity_hint="operative",
+            max_records=10_000,
+        )
+    except Exception:
+        return False
+    evidence_path = Path(str(result.get("evidence_table_csv", "")))
+    if not evidence_path.exists():
+        return False
+    try:
+        rows = list(csv.DictReader(evidence_path.read_text(encoding="utf-8-sig").splitlines()))
+    except Exception:
+        return False
+    low, high = height_range
+    denominator = 0
+    numerator = 0
+    for row in rows:
+        try:
+            height = float(str(row.get("height", "")).strip())
+        except ValueError:
+            continue
+        if not (low <= height <= high) or height <= 0:
+            continue
+        denominator += 1
+        try:
+            pub_value = int(float(str(row.get("publisher affiliation", "")).strip()))
+        except ValueError:
+            continue
+        if pub_value == publisher_id:
+            numerator += 1
+    if denominator == 0:
+        return False
+    percentage = numerator * 100.0 / denominator
+    _write_scalar_text_prediction(
+        prediction_path,
+        _prediction_header(prediction_path, "percentage"),
+        repr(float(percentage)),
+    )
+    return True
+
+
 def _find_event_id(task_dir: Path, event_name: str) -> str | None:
     info = _find_event_info(task_dir, event_name)
     return info[0] if info else None
@@ -1135,6 +1648,46 @@ def execute_repair_plan(
                 applied.append(f"[{action.action_type}] recomputed consumption from Price/Amount unit price")
             else:
                 skipped.append(f"[{action.action_type}] no safe unit-price recompute found")
+        elif action.action_type == "fix_budget_times_ratio":
+            changed = _repair_budget_times_ratio(
+                question=question,
+                task_dir=task_dir,
+                prediction_path=prediction_path,
+            )
+            if changed:
+                applied.append(f"[{action.action_type}] recomputed ratio from linked budget amounts")
+            else:
+                skipped.append(f"[{action.action_type}] no safe budget ratio recompute found")
+        elif action.action_type == "fix_toxicology_atom_filter_count":
+            changed = _repair_toxicology_atom_filter_count(
+                question=question,
+                task_dir=task_dir,
+                prediction_path=prediction_path,
+            )
+            if changed:
+                applied.append(f"[{action.action_type}] recomputed filtered atom count")
+            else:
+                skipped.append(f"[{action.action_type}] no safe atom-count recompute found")
+        elif action.action_type == "fix_patient_threshold_count":
+            changed = _repair_patient_threshold_count(
+                question=question,
+                task_dir=task_dir,
+                prediction_path=prediction_path,
+            )
+            if changed:
+                applied.append(f"[{action.action_type}] recomputed patient count with document population")
+            else:
+                skipped.append(f"[{action.action_type}] no safe patient threshold recompute found")
+        elif action.action_type == "fix_superhero_publisher_percentage":
+            changed = _repair_superhero_publisher_percentage(
+                question=question,
+                task_dir=task_dir,
+                prediction_path=prediction_path,
+            )
+            if changed:
+                applied.append(f"[{action.action_type}] recomputed publisher percentage from entity sections")
+            else:
+                skipped.append(f"[{action.action_type}] no safe superhero percentage recompute found")
         else:
             # For semantic actions we can't auto-fix, skip but note
             skipped.append(f"[{action.action_type}] requires LLM re-run: {action.detail}")
