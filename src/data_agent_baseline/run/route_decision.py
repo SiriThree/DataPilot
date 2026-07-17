@@ -44,10 +44,22 @@ LARGE_CSV_SQL_FIRST_BYTES = 5 * 1024 * 1024
 @dataclass
 class RouteDecision:
     route: str  # sql_first | python_first | document_first | hybrid_sql_python | hybrid_doc_table
+    task_profile: "TaskProfile"
     scores: dict[str, int]
     reasons: list[str]
     recommended_tools: list[str]
     risk_flags: list[str]
+
+
+@dataclass
+class TaskProfile:
+    """Deterministic task classification used by prompts, trace mining, and retries."""
+    task_type: str
+    operation: str
+    output_shape: str
+    domains: list[str]
+    validation_focus: list[str]
+    flags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -88,6 +100,127 @@ def _dedupe(lst: list[str]) -> list[str]:
             seen.add(item)
             out.append(item)
     return out
+
+
+def _contains_any(text: str, terms: set[str]) -> bool:
+    return any(term in text for term in terms)
+
+
+def _infer_domains(question: str, schema_hints: list[SchemaHint]) -> list[str]:
+    q = _normalize_text(question)
+    schema_text_parts = [q]
+    for hint in schema_hints:
+        schema_text_parts.append(Path(hint.path).name.lower())
+        schema_text_parts.extend(column.lower() for column in hint.columns)
+        schema_text_parts.extend(key.lower() for key in hint.top_keys)
+        for table in hint.tables:
+            schema_text_parts.append(str(table.get("name", "")).lower())
+            for column in table.get("columns", []):
+                if isinstance(column, dict):
+                    schema_text_parts.append(str(column.get("name", "")).lower())
+    text = " ".join(schema_text_parts)
+
+    domains: list[str] = []
+    if _contains_any(text, {"grand prix", "constructor", "raceid", "race_id", "driver", "circuit"}):
+        domains.append("formula1")
+    if _contains_any(text, {"patient", "hemoglobin", "glucose", "lab", "diagnosis", "medical"}):
+        domains.append("medical_patient")
+    if _contains_any(text, {"molecule", "atom", "bond", "toxicology", "compound"}):
+        domains.append("toxicology")
+    if _contains_any(text, {"superhero", "publisher", "alignment", "hero"}):
+        domains.append("superhero")
+    if _contains_any(text, {"school", "sat", "funding", "district"}):
+        domains.append("school")
+    if _contains_any(text, {"post", "comment", "stack", "score", "user_id", "stackoverflow"}):
+        domains.append("stackexchange")
+    if _contains_any(text, {"customer", "consumption", "tariff", "electric", "energy"}):
+        domains.append("energy_consumption")
+    return _dedupe(domains)
+
+
+def _infer_task_profile(
+    *,
+    question: str,
+    schema_hints: list[SchemaHint],
+    has_table: bool,
+    has_real_doc: bool,
+) -> TaskProfile:
+    q = _normalize_text(question)
+
+    is_count = bool(re.search(r"\b(how many|count|number of|total number)\b", q))
+    is_average = bool(re.search(r"\b(avg|average|mean)\b", q))
+    is_sum = bool(re.search(r"\b(sum|total)\b", q)) and not is_count
+    is_ratio = bool(re.search(r"\b(percent|percentage|ratio|proportion|rate)\b", q))
+    is_rank = bool(re.search(r"\b(top|highest|lowest|most|least|rank|ranked|first|second|third|1st|2nd|3rd)\b", q))
+    is_threshold = bool(re.search(r"\b(threshold|normal|abnormal|greater than|less than|above|below|over|under)\b", q))
+    is_lookup = bool(re.search(r"\b(what|which|who|when|where|website|name|time|id)\b", q))
+    is_join = bool(
+        re.search(r"\b(join|merge|match|corresponding|associated|linked|for each|by .* id)\b", q)
+        or (has_table and has_real_doc)
+    )
+
+    if re.search(r"\b(list|all|records|rows)\b", q):
+        output_shape = "table"
+    elif is_lookup and re.search(r"\b(name and|website and|id and|time and)\b", q):
+        output_shape = "single_record"
+    else:
+        output_shape = "scalar"
+
+    if is_threshold and is_count:
+        operation = "threshold_count"
+        task_type = "threshold_count"
+    elif is_ratio:
+        operation = "ratio"
+        task_type = "ratio_or_percentage"
+    elif is_average:
+        operation = "aggregate_average"
+        task_type = "aggregation"
+    elif is_sum:
+        operation = "aggregate_sum"
+        task_type = "aggregation"
+    elif is_rank:
+        operation = "rank_lookup"
+        task_type = "rank_lookup"
+    elif is_count:
+        operation = "count"
+        task_type = "count"
+    elif is_lookup:
+        operation = "lookup"
+        task_type = "document_table_lookup" if has_table and has_real_doc else "lookup"
+    else:
+        operation = "analysis"
+        task_type = "general_analysis"
+
+    flags: list[str] = []
+    if is_join:
+        flags.append("join_likely")
+    if has_real_doc and has_table:
+        flags.append("doc_table_grounding")
+    if output_shape == "scalar" and task_type in {"count", "aggregation", "ratio_or_percentage", "threshold_count"}:
+        flags.append("single_value_expected")
+
+    validation_focus: list[str] = []
+    if task_type in {"count", "threshold_count"}:
+        validation_focus.append("verify population filters and exact counted entity IDs before answering")
+    if task_type == "aggregation":
+        validation_focus.append("verify grouping level, units, null handling, and aggregation operator")
+    if task_type == "ratio_or_percentage":
+        validation_focus.append("verify numerator, denominator, and whether output should be raw ratio or percent")
+    if task_type == "rank_lookup":
+        validation_focus.append("verify sort key, sort direction, tie handling, and requested rank")
+    if task_type in {"lookup", "document_table_lookup"}:
+        validation_focus.append("verify target entity identity and requested field names")
+    if "doc_table_grounding" in flags:
+        validation_focus.append("extract document rules first, then apply them to table rows")
+
+    return TaskProfile(
+        task_type=task_type,
+        operation=operation,
+        output_shape=output_shape,
+        domains=_infer_domains(question, schema_hints),
+        validation_focus=_dedupe(validation_focus),
+        flags=_dedupe(flags),
+    )
 
 
 # ── Schema hint extraction ────────────────────────────────────────
@@ -311,8 +444,16 @@ def decide_route(
         reasons.append("zero-score fallback")
         risk_flags.append("zero_score_route")
 
+    task_profile = _infer_task_profile(
+        question=question,
+        schema_hints=schema_hints,
+        has_table=has_table,
+        has_real_doc=has_real_doc,
+    )
+
     return RouteDecision(
         route=route,
+        task_profile=task_profile,
         scores=scores,
         reasons=_dedupe(reasons),
         recommended_tools=_dedupe(recommended_tools),
@@ -320,9 +461,21 @@ def decide_route(
     )
 
 
+def task_profile_to_dict(profile: TaskProfile) -> dict[str, Any]:
+    return {
+        "task_type": profile.task_type,
+        "operation": profile.operation,
+        "output_shape": profile.output_shape,
+        "domains": profile.domains,
+        "validation_focus": profile.validation_focus,
+        "flags": profile.flags,
+    }
+
+
 def route_to_dict(rd: RouteDecision) -> dict[str, Any]:
     return {
         "route": rd.route,
+        "task_profile": task_profile_to_dict(rd.task_profile),
         "scores": rd.scores,
         "reasons": rd.reasons,
         "recommended_tools": rd.recommended_tools,
@@ -334,6 +487,8 @@ def build_route_prompt_hint(rd: RouteDecision) -> str:
     """Generate a concise prompt hint to inject before the task question."""
     route_name = rd.route.replace("_", " ").title()
     tools = ", ".join(rd.recommended_tools) if rd.recommended_tools else "auto-detect"
+    domains = ", ".join(rd.task_profile.domains) if rd.task_profile.domains else "general"
+    profile_flags = ", ".join(rd.task_profile.flags) if rd.task_profile.flags else "none"
     role_focus = {
         "sql_first": (
             "Data Engineer focus: inspect DB schema, write one precise SQL query, "
@@ -356,9 +511,16 @@ def build_route_prompt_hint(rd: RouteDecision) -> str:
     }.get(rd.route, "Follow the role protocol and choose tools from observed context.")
     lines = [
         f"Route: {route_name} (determined by signal matching)",
+        (
+            "Task profile: "
+            f"type={rd.task_profile.task_type}; operation={rd.task_profile.operation}; "
+            f"output={rd.task_profile.output_shape}; domain={domains}; flags={profile_flags}"
+        ),
         f"Recommended tools: {tools}",
         f"Role focus: {role_focus}",
     ]
+    if rd.task_profile.validation_focus:
+        lines.append("Validation focus: " + " | ".join(rd.task_profile.validation_focus[:3]))
     if rd.risk_flags:
         lines.append(f"Risk flags: {', '.join(rd.risk_flags)}")
     if rd.reasons:
