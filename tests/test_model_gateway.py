@@ -70,6 +70,37 @@ def test_build_model_adapter_selects_openai_compatible() -> None:
     assert isinstance(adapter, OpenAIModelAdapter)
 
 
+def test_three_provider_configs_load_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "QWEN_API_KEY",
+        "QWEN_MODEL",
+        "QWEN_API_BASE",
+        "KIMI_API_KEY",
+        "KIMI_MODEL",
+        "KIMI_API_BASE",
+        "MIMO_API_KEY",
+        "MIMO_MODEL",
+        "MIMO_API_BASE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    project_root = Path(__file__).resolve().parents[1]
+    expected = {
+        "react_baseline.qwen.example.yaml": (
+            "qwen-max",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        ),
+        "react_baseline.kimi.example.yaml": ("kimi-k2.5", "https://api.moonshot.cn/v1"),
+        "react_baseline.mimo.example.yaml": ("mimo-v2.5-pro", "https://api.xiaomimimo.com/v1"),
+    }
+    for filename, (model, api_base) in expected.items():
+        config = load_app_config(project_root / "configs" / filename)
+        assert config.agent.provider == "openai_compatible"
+        assert config.agent.model == model
+        assert config.agent.api_base == api_base
+        assert config.run.max_workers == 2
+
+
 def test_build_model_adapter_rejects_unknown_provider() -> None:
     config = AppConfig(
         dataset=DatasetConfig(),

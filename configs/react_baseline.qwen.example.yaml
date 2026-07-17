@@ -1,0 +1,18 @@
+dataset:
+  root_path: data/public/input
+
+agent:
+  provider: openai_compatible
+  model: ${QWEN_MODEL:-qwen-max}
+  api_base: ${QWEN_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+  api_key: ${QWEN_API_KEY}
+  max_steps: 36
+  temperature: 0.0
+  use_multi_agent: true
+
+run:
+  output_dir: artifacts/runs
+  run_id:
+  max_workers: 2
+  task_timeout_seconds: 600
+  enable_guided_retry: true
