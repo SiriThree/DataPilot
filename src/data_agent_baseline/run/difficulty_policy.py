@@ -11,6 +11,7 @@ from data_agent_baseline.run.route_decision import RouteDecision
 SIMPLE_TASK_TYPES = {"aggregation", "count", "lookup", "rank_lookup"}
 SIMPLE_ROUTES = {"sql_first", "python_first", "hybrid_sql_python"}
 MEDIUM_LIGHTWEIGHT_SQL_TYPES = {"aggregation", "count", "rank_lookup"}
+HARD_CONTROLLED_SQL_TYPES = {"aggregation", "count", "rank_lookup", "lookup"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +67,17 @@ def _is_medium_sql_fast_path(route_decision: RouteDecision) -> bool:
     if route_decision.route != "sql_first":
         return False
     if profile.task_type not in MEDIUM_LIGHTWEIGHT_SQL_TYPES:
+        return False
+    if "doc_table_grounding" in profile.flags:
+        return False
+    return True
+
+
+def _is_hard_controlled_sql_path(route_decision: RouteDecision) -> bool:
+    profile = route_decision.task_profile
+    if route_decision.route != "sql_first":
+        return False
+    if profile.task_type not in HARD_CONTROLLED_SQL_TYPES:
         return False
     if "doc_table_grounding" in profile.flags:
         return False
@@ -152,12 +164,83 @@ def build_strategy_policy(
         )
 
     if normalized == "hard":
-        max_steps = _bounded_steps(configured_max_steps, lower=32, upper=40)
-        if route_decision.route == "hybrid_doc_table" or profile.task_type in {"threshold_count", "ratio_or_percentage"}:
-            max_steps = max(max_steps, 36)
+        if profile.task_type == "threshold_count":
+            return StrategyPolicy(
+                difficulty=normalized,
+                mode="hard_threshold_solver_ready",
+                max_steps=40,
+                use_multi_agent=configured_use_multi_agent,
+                use_verifier=True,
+                use_router=True,
+                use_debugger=True,
+                use_decomposer=True,
+                verifier_frequency="every_step",
+                guided_retry_mode="aggressive",
+                enable_guided_retry=configured_enable_guided_retry,
+                repair_scope="generic_pattern_plus_guarded_solver",
+                required_first_tools=["profile_context", "extract_doc_records", "ground_thresholds"],
+                notes=notes + [
+                    "hard threshold path: extract population, ground thresholds, then count distinct target entities",
+                ],
+            )
+        if profile.task_type == "ratio_or_percentage":
+            return StrategyPolicy(
+                difficulty=normalized,
+                mode="hard_ratio_crosscheck",
+                max_steps=40,
+                use_multi_agent=configured_use_multi_agent,
+                use_verifier=True,
+                use_router=True,
+                use_debugger=True,
+                use_decomposer=True,
+                verifier_frequency="every_compute",
+                guided_retry_mode="aggressive",
+                enable_guided_retry=configured_enable_guided_retry,
+                repair_scope="generic_pattern_plus_guarded_solver",
+                required_first_tools=["profile_context", "execute_data_sql"],
+                notes=notes + [
+                    "hard ratio path: compute numerator and denominator separately, then cross-check units/format",
+                ],
+            )
+        if route_decision.route in {"hybrid_doc_table", "document_first"} or "pure_doc_no_structured_source" in route_decision.risk_flags:
+            return StrategyPolicy(
+                difficulty=normalized,
+                mode="hard_doc_table_decompose",
+                max_steps=40,
+                use_multi_agent=configured_use_multi_agent,
+                use_verifier=True,
+                use_router=True,
+                use_debugger=True,
+                use_decomposer=True,
+                verifier_frequency="every_compute",
+                guided_retry_mode="aggressive",
+                enable_guided_retry=configured_enable_guided_retry,
+                repair_scope="generic_pattern_plus_guarded_solver",
+                required_first_tools=["profile_context", "extract_doc_records"],
+                notes=notes + ["hard doc/table path: decompose rule extraction and table computation"],
+            )
+        if _is_hard_controlled_sql_path(route_decision):
+            return StrategyPolicy(
+                difficulty=normalized,
+                mode="hard_sql_controlled",
+                max_steps=32,
+                use_multi_agent=configured_use_multi_agent,
+                use_verifier=True,
+                use_router=True,
+                use_debugger=True,
+                use_decomposer=False,
+                verifier_frequency="every_compute",
+                guided_retry_mode="aggressive",
+                enable_guided_retry=configured_enable_guided_retry,
+                repair_scope="generic_pattern",
+                required_first_tools=["profile_context", "execute_data_sql"],
+                notes=notes + ["hard SQL path: keep multi-agent verification but skip decomposition overhead"],
+            )
+
+        max_steps = _bounded_steps(configured_max_steps, lower=36, upper=40)
         return StrategyPolicy(
             difficulty=normalized,
-            mode="hard_multi_agent",
+            mode="hard_multi_agent_general",
             max_steps=max_steps,
             use_multi_agent=configured_use_multi_agent,
             use_verifier=True,
@@ -169,7 +252,7 @@ def build_strategy_policy(
             enable_guided_retry=configured_enable_guided_retry,
             repair_scope="generic_pattern_plus_guarded_solver",
             required_first_tools=["profile_context"],
-            notes=notes + ["hard: enable decomposition metadata and stronger verification"],
+            notes=notes + ["hard general path: decompose metadata and stronger verification"],
         )
 
     max_steps = _bounded_steps(configured_max_steps, lower=48, upper=60)

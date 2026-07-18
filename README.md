@@ -124,7 +124,7 @@ profile_context -> execute_data_sql -> execute_python -> answer
 ```text
 easy     -> easy_fast_react / easy_guarded
 medium   -> medium_sql_react / medium_planner_executor
-hard     -> hard_multi_agent
+hard     -> hard_sql_controlled / hard_doc_table_decompose / hard_threshold_solver_ready / hard_ratio_crosscheck / hard_multi_agent_general
 extreme  -> extreme_task_graph_ready
 ```
 
@@ -132,7 +132,7 @@ extreme  -> extreme_task_graph_ready
 
 - Easy 简单 SQL/Python 任务走轻量 ReAct，关闭 decomposer 和 guided retry，默认 12 步预算。
 - Medium 对 SQL-first 的聚合、计数和排名查询走轻量 ReAct，优先用表格工具直接计算，保留 guided retry；其他 Medium 任务保留 planner / executor / verifier / debugger，但不做递归分解，预算约 20-24 步。
-- Hard 启用更强 multi-agent 策略和 decomposer 元信息，预算约 32-40 步。
+- Hard 按任务路线进一步分层：SQL-first 简单分析走 `hard_sql_controlled`，保留 multi-agent 验证但跳过 decomposer；文档表格联合任务走 `hard_doc_table_decompose`；阈值计数走 `hard_threshold_solver_ready`，要求规则抽取、阈值 grounding 和逐步验证；比例/百分比任务走 `hard_ratio_crosscheck`，要求分别提交 numerator / denominator 证据。预算约 32-40 步。
 - Extreme 预留更大预算和 DAG/subtask execution 扩展空间，预算约 48-60 步。
 
 注意：Hard/Extreme 的真正子任务 DAG 调度仍是后续工作；当前阶段先统一策略、预算、trace 记录和执行器开关。

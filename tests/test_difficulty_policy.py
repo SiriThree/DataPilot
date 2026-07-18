@@ -121,7 +121,7 @@ def test_easy_large_csv_uses_lightweight_sql_react(tmp_path: Path) -> None:
     assert policy.enable_guided_retry is False
 
 
-def test_hard_hybrid_policy_enables_decomposer(tmp_path: Path) -> None:
+def test_hard_threshold_policy_uses_solver_ready_mode(tmp_path: Path) -> None:
     context_dir = tmp_path / "context"
     context_dir.mkdir()
     (context_dir / "rules.md").write_text("Use threshold 10 for valid records.", encoding="utf-8")
@@ -140,12 +140,70 @@ def test_hard_hybrid_policy_enables_decomposer(tmp_path: Path) -> None:
         configured_enable_guided_retry=True,
     )
 
-    assert policy.mode == "hard_multi_agent"
-    assert policy.max_steps >= 36
+    assert policy.mode == "hard_threshold_solver_ready"
+    assert policy.max_steps == 40
     assert policy.use_decomposer is True
+    assert policy.verifier_frequency == "every_step"
     assert policy.guided_retry_mode == "aggressive"
     assert "Strategy policy:" in build_strategy_prompt_hint(policy)
-    assert strategy_policy_to_dict(policy)["mode"] == "hard_multi_agent"
+    assert "ground_thresholds" in policy.required_first_tools
+    assert strategy_policy_to_dict(policy)["mode"] == "hard_threshold_solver_ready"
+
+
+def test_hard_sql_policy_skips_decomposer_but_keeps_multi_agent(tmp_path: Path) -> None:
+    context_dir = tmp_path / "context"
+    context_dir.mkdir()
+    db_path = context_dir / "sales.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("create table sales (id integer, amount integer)")
+        conn.executemany("insert into sales values (?, ?)", [(1, 10), (2, 20)])
+    route = decide_route(
+        question="What is the average amount?",
+        context_dir=context_dir,
+        difficulty="hard",
+    )
+
+    policy = build_strategy_policy(
+        difficulty="hard",
+        route_decision=route,
+        configured_max_steps=36,
+        configured_use_multi_agent=True,
+        configured_enable_guided_retry=True,
+    )
+
+    assert route.route == "sql_first"
+    assert policy.mode == "hard_sql_controlled"
+    assert policy.max_steps == 32
+    assert policy.use_multi_agent is True
+    assert policy.use_decomposer is False
+    assert policy.use_verifier is True
+    assert policy.required_first_tools == ["profile_context", "execute_data_sql"]
+
+
+def test_hard_doc_table_policy_uses_decomposition(tmp_path: Path) -> None:
+    context_dir = tmp_path / "context"
+    context_dir.mkdir()
+    (context_dir / "policy.md").write_text("Only records with approved status are valid.", encoding="utf-8")
+    (context_dir / "records.csv").write_text("id,status,value\n1,approved,12\n2,draft,8\n", encoding="utf-8")
+    route = decide_route(
+        question="According to the policy document, list the approved record ids.",
+        context_dir=context_dir,
+        difficulty="hard",
+    )
+
+    policy = build_strategy_policy(
+        difficulty="hard",
+        route_decision=route,
+        configured_max_steps=36,
+        configured_use_multi_agent=True,
+        configured_enable_guided_retry=True,
+    )
+
+    assert route.route in {"document_first", "hybrid_doc_table"}
+    assert policy.mode == "hard_doc_table_decompose"
+    assert policy.max_steps == 40
+    assert policy.use_decomposer is True
+    assert "extract_doc_records" in policy.required_first_tools
 
 
 def test_extreme_policy_reserves_larger_budget(tmp_path: Path) -> None:
