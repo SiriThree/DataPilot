@@ -206,6 +206,35 @@ def test_hard_doc_table_policy_uses_decomposition(tmp_path: Path) -> None:
     assert "extract_doc_records" in policy.required_first_tools
 
 
+def test_hard_ratio_policy_avoids_decomposer_overhead(tmp_path: Path) -> None:
+    context_dir = tmp_path / "context"
+    context_dir.mkdir()
+    with sqlite3.connect(context_dir / "results.db") as conn:
+        conn.execute("create table results (driver_id integer, rank integer, seconds real)")
+        conn.executemany("insert into results values (?, ?, ?)", [(1, 1, 100.0), (2, 20, 120.0)])
+    (context_dir / "race.md").write_text("Australian Grand Prix race metadata.", encoding="utf-8")
+    route = decide_route(
+        question="How much faster in percentage is the champion than the driver who finished last?",
+        context_dir=context_dir,
+        difficulty="hard",
+    )
+
+    policy = build_strategy_policy(
+        difficulty="hard",
+        route_decision=route,
+        configured_max_steps=36,
+        configured_use_multi_agent=True,
+        configured_enable_guided_retry=True,
+    )
+
+    assert route.task_profile.task_type == "ratio_or_percentage"
+    assert policy.mode == "hard_ratio_crosscheck"
+    assert policy.max_steps == 32
+    assert policy.use_decomposer is False
+    assert policy.use_verifier is True
+    assert policy.required_first_tools == ["profile_context", "execute_data_sql"]
+
+
 def test_extreme_policy_reserves_larger_budget(tmp_path: Path) -> None:
     context_dir = tmp_path / "context"
     context_dir.mkdir()

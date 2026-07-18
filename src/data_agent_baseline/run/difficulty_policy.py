@@ -187,19 +187,19 @@ def build_strategy_policy(
             return StrategyPolicy(
                 difficulty=normalized,
                 mode="hard_ratio_crosscheck",
-                max_steps=40,
+                max_steps=32,
                 use_multi_agent=configured_use_multi_agent,
                 use_verifier=True,
                 use_router=True,
                 use_debugger=True,
-                use_decomposer=True,
+                use_decomposer=False,
                 verifier_frequency="every_compute",
                 guided_retry_mode="aggressive",
                 enable_guided_retry=configured_enable_guided_retry,
                 repair_scope="generic_pattern_plus_guarded_solver",
                 required_first_tools=["profile_context", "execute_data_sql"],
                 notes=notes + [
-                    "hard ratio path: compute numerator and denominator separately, then cross-check units/format",
+                    "hard ratio path: avoid decomposition overhead; compute numerator and denominator separately",
                 ],
             )
         if route_decision.route in {"hybrid_doc_table", "document_first"} or "pure_doc_no_structured_source" in route_decision.risk_flags:
