@@ -10,6 +10,7 @@ from data_agent_baseline.run.route_decision import RouteDecision
 
 SIMPLE_TASK_TYPES = {"aggregation", "count", "lookup", "rank_lookup"}
 SIMPLE_ROUTES = {"sql_first", "python_first", "hybrid_sql_python"}
+MEDIUM_LIGHTWEIGHT_SQL_TYPES = {"aggregation", "count", "rank_lookup"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +61,17 @@ def _is_easy_fast_path(route_decision: RouteDecision) -> bool:
     return True
 
 
+def _is_medium_sql_fast_path(route_decision: RouteDecision) -> bool:
+    profile = route_decision.task_profile
+    if route_decision.route != "sql_first":
+        return False
+    if profile.task_type not in MEDIUM_LIGHTWEIGHT_SQL_TYPES:
+        return False
+    if "doc_table_grounding" in profile.flags:
+        return False
+    return True
+
+
 def build_strategy_policy(
     *,
     difficulty: str | None,
@@ -101,6 +113,24 @@ def build_strategy_policy(
         )
 
     if normalized == "medium":
+        sql_fast_path = _is_medium_sql_fast_path(route_decision)
+        if sql_fast_path:
+            return StrategyPolicy(
+                difficulty=normalized,
+                mode="medium_sql_react",
+                max_steps=20,
+                use_multi_agent=False,
+                use_verifier=False,
+                use_router=False,
+                use_debugger=False,
+                use_decomposer=False,
+                verifier_frequency="near_end",
+                guided_retry_mode="normal",
+                enable_guided_retry=configured_enable_guided_retry,
+                repair_scope="generic_pattern",
+                required_first_tools=["profile_context", "execute_data_sql"],
+                notes=notes + ["medium SQL fast path: use table tools directly, avoid planner/router/decomposer"],
+            )
         max_steps = _bounded_steps(configured_max_steps, lower=20, upper=24)
         if route_decision.route == "hybrid_doc_table" or profile.task_type == "threshold_count":
             max_steps = max(max_steps, 24)

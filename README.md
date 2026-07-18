@@ -123,7 +123,7 @@ profile_context -> execute_data_sql -> execute_python -> answer
 
 ```text
 easy     -> easy_fast_react / easy_guarded
-medium   -> medium_planner_executor
+medium   -> medium_sql_react / medium_planner_executor
 hard     -> hard_multi_agent
 extreme  -> extreme_task_graph_ready
 ```
@@ -131,7 +131,7 @@ extreme  -> extreme_task_graph_ready
 当前已经落地的策略包括：
 
 - Easy 简单 SQL/Python 任务走轻量 ReAct，关闭 decomposer 和 guided retry，默认 12 步预算。
-- Medium 保留 planner / executor / verifier / debugger，但不做递归分解，预算约 20-24 步。
+- Medium 对 SQL-first 的聚合、计数和排名查询走轻量 ReAct，优先用表格工具直接计算，保留 guided retry；其他 Medium 任务保留 planner / executor / verifier / debugger，但不做递归分解，预算约 20-24 步。
 - Hard 启用更强 multi-agent 策略和 decomposer 元信息，预算约 32-40 步。
 - Extreme 预留更大预算和 DAG/subtask execution 扩展空间，预算约 48-60 步。
 

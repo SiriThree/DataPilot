@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from data_agent_baseline.run.difficulty_policy import (
@@ -58,6 +59,36 @@ def test_medium_policy_keeps_planner_without_decomposer(tmp_path: Path) -> None:
     assert policy.use_multi_agent is True
     assert policy.use_decomposer is False
     assert policy.enable_guided_retry is True
+
+
+def test_medium_sql_aggregation_uses_lightweight_react(tmp_path: Path) -> None:
+    context_dir = tmp_path / "context"
+    context_dir.mkdir()
+    db_path = context_dir / "sales.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("create table sales (id integer, amount integer)")
+        conn.executemany("insert into sales values (?, ?)", [(1, 10), (2, 20)])
+    route = decide_route(
+        question="What is the total amount?",
+        context_dir=context_dir,
+        difficulty="medium",
+    )
+
+    policy = build_strategy_policy(
+        difficulty="medium",
+        route_decision=route,
+        configured_max_steps=36,
+        configured_use_multi_agent=True,
+        configured_enable_guided_retry=True,
+    )
+
+    assert route.route == "sql_first"
+    assert route.task_profile.task_type == "aggregation"
+    assert policy.mode == "medium_sql_react"
+    assert policy.max_steps == 20
+    assert policy.use_multi_agent is False
+    assert policy.enable_guided_retry is True
+    assert policy.required_first_tools == ["profile_context", "execute_data_sql"]
 
 
 def test_easy_large_csv_uses_lightweight_sql_react(tmp_path: Path) -> None:
