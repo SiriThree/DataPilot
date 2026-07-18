@@ -34,7 +34,9 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _evaluation_failures(evaluation: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    failures = evaluation.get("failures", [])
+    summary = evaluation.get("summary")
+    source = summary if isinstance(summary, dict) else evaluation
+    failures = source.get("failures", [])
     if not isinstance(failures, list):
         return {}
     rows: dict[str, dict[str, Any]] = {}
@@ -45,6 +47,11 @@ def _evaluation_failures(evaluation: dict[str, Any]) -> dict[str, dict[str, Any]
         if task_id:
             rows[task_id] = item
     return rows
+
+
+def _evaluation_summary(evaluation: dict[str, Any]) -> dict[str, Any]:
+    summary = evaluation.get("summary")
+    return summary if isinstance(summary, dict) else evaluation
 
 
 def _task_ids_from_run(run_dir: Path, failures: dict[str, dict[str, Any]]) -> list[str]:
@@ -308,6 +315,7 @@ def analyze_run_failures(
 ) -> FailureMiningResult:
     evaluation_file = evaluation_path or (run_dir / "evaluation.json")
     evaluation = _read_json(evaluation_file)
+    evaluation_summary = _evaluation_summary(evaluation)
     failures = _evaluation_failures(evaluation)
     task_ids = _task_ids_from_run(run_dir, failures)
     rows = [_task_row(run_dir=run_dir, task_id=task_id, eval_failure=failures.get(task_id)) for task_id in task_ids]
@@ -331,8 +339,8 @@ def analyze_run_failures(
     summary = {
         "run_dir": str(run_dir),
         "evaluation_path": str(evaluation_file),
-        "total_tasks_in_evaluation": evaluation.get("total_tasks"),
-        "overall_score": evaluation.get("overall_score"),
+        "total_tasks_in_evaluation": evaluation_summary.get("total_tasks"),
+        "overall_score": evaluation_summary.get("overall_score"),
         "score_threshold": score_threshold,
         "task_count_seen": len(rows),
         "low_score_task_count": len(low_score_rows),

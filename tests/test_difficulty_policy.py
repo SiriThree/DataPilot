@@ -60,6 +60,36 @@ def test_medium_policy_keeps_planner_without_decomposer(tmp_path: Path) -> None:
     assert policy.enable_guided_retry is True
 
 
+def test_easy_large_csv_uses_lightweight_sql_react(tmp_path: Path) -> None:
+    context_dir = tmp_path / "context"
+    context_dir.mkdir()
+    large_csv = context_dir / "transactions.csv"
+    with large_csv.open("w", encoding="utf-8", newline="") as handle:
+        handle.write("id,amount\n")
+        row = "1,10\n"
+        for _ in range((5 * 1024 * 1024 // len(row)) + 1):
+            handle.write(row)
+    route = decide_route(
+        question="List all transaction ids.",
+        context_dir=context_dir,
+        difficulty="easy",
+    )
+
+    policy = build_strategy_policy(
+        difficulty="easy",
+        route_decision=route,
+        configured_max_steps=36,
+        configured_use_multi_agent=True,
+        configured_enable_guided_retry=True,
+    )
+
+    assert "large_csv_sql_first" in route.risk_flags
+    assert policy.mode == "easy_large_sql_react"
+    assert policy.max_steps == 16
+    assert policy.use_multi_agent is False
+    assert policy.enable_guided_retry is False
+
+
 def test_hard_hybrid_policy_enables_decomposer(tmp_path: Path) -> None:
     context_dir = tmp_path / "context"
     context_dir.mkdir()

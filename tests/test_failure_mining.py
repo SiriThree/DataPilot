@@ -105,3 +105,49 @@ def test_failure_mining_groups_low_score_tasks(tmp_path: Path) -> None:
     json_path, md_path = write_failure_mining_outputs(result, run_dir)
     assert json_path.exists()
     assert md_path.exists()
+
+
+def test_failure_mining_reads_nested_evaluation_summary(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_json(
+        run_dir / "evaluation.json",
+        {
+            "tasks": [],
+            "summary": {
+                "total_tasks": 1,
+                "overall_score": 0.0,
+                "failures": [
+                    {
+                        "task_id": "task_38",
+                        "score": 0.0,
+                        "difficulty": "easy",
+                    }
+                ],
+            },
+        },
+    )
+    _write_json(
+        run_dir / "task_38" / "trace.json",
+        {
+            "task_id": "task_38",
+            "_route_decision": {
+                "route": "sql_first",
+                "task_profile": {"task_type": "lookup", "operation": "lookup"},
+            },
+        },
+    )
+    _write_json(
+        run_dir / "task_38" / "failure_analysis.json",
+        {
+            "task_id": "task_38",
+            "signals": [{"code": "no_grounded_answer", "severity": "error"}],
+        },
+    )
+
+    result = analyze_run_failures(run_dir=run_dir)
+
+    assert result.summary["total_tasks_in_evaluation"] == 1
+    assert result.summary["overall_score"] == 0.0
+    assert result.summary["low_score_task_count"] == 1
+    assert result.tasks[0]["task_id"] == "task_38"
+    assert result.groups["by_signal"] == {"no_grounded_answer": 1}

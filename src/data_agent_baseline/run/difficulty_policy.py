@@ -45,13 +45,17 @@ def _bounded_steps(configured: int, *, lower: int, upper: int | None = None) -> 
 
 def _is_easy_fast_path(route_decision: RouteDecision) -> bool:
     profile = route_decision.task_profile
+    if (
+        "large_csv_sql_first" in route_decision.risk_flags
+        and route_decision.route == "sql_first"
+        and "doc_table_grounding" not in profile.flags
+    ):
+        return True
     if route_decision.route not in SIMPLE_ROUTES:
         return False
     if profile.task_type not in SIMPLE_TASK_TYPES:
         return False
     if "doc_table_grounding" in profile.flags:
-        return False
-    if "large_csv_sql_first" in route_decision.risk_flags:
         return False
     return True
 
@@ -74,10 +78,11 @@ def build_strategy_policy(
 
     if normalized == "easy":
         fast_path = _is_easy_fast_path(route_decision)
+        large_sql = fast_path and "large_csv_sql_first" in route_decision.risk_flags
         return StrategyPolicy(
             difficulty=normalized,
-            mode="easy_fast_react" if fast_path else "easy_guarded",
-            max_steps=12 if fast_path else 16,
+            mode="easy_large_sql_react" if large_sql else ("easy_fast_react" if fast_path else "easy_guarded"),
+            max_steps=16 if large_sql else (12 if fast_path else 16),
             use_multi_agent=False if fast_path else configured_use_multi_agent,
             use_verifier=not fast_path,
             use_router=not fast_path,
@@ -88,7 +93,11 @@ def build_strategy_policy(
             enable_guided_retry=False if fast_path else configured_enable_guided_retry,
             repair_scope="format_and_safe_generic",
             required_first_tools=["profile_context"],
-            notes=notes + (["easy fast path: avoid planner/router/decomposer"] if fast_path else []),
+            notes=notes + (
+                ["easy large SQL path: use DuckDB, avoid planner/router/decomposer"]
+                if large_sql
+                else (["easy fast path: avoid planner/router/decomposer"] if fast_path else [])
+            ),
         )
 
     if normalized == "medium":
