@@ -255,6 +255,29 @@ def build_strategy_policy(
             notes=notes + ["hard general path: decompose metadata and stronger verification"],
         )
 
+    if (
+        "pure_doc_no_structured_source" in route_decision.risk_flags
+        and profile.task_type == "threshold_count"
+    ):
+        return StrategyPolicy(
+            difficulty=normalized,
+            mode="extreme_pure_doc_threshold_react",
+            max_steps=32,
+            use_multi_agent=False,
+            use_verifier=False,
+            use_router=False,
+            use_debugger=False,
+            use_decomposer=False,
+            verifier_frequency="near_end",
+            guided_retry_mode="aggressive",
+            enable_guided_retry=configured_enable_guided_retry,
+            repair_scope="generic_pattern_plus_guarded_solver",
+            required_first_tools=["profile_context", "extract_doc_records", "ground_thresholds", "execute_python"],
+            notes=notes + [
+                "extreme pure-doc threshold path: use structured extraction and deterministic counting",
+            ],
+        )
+
     max_steps = _bounded_steps(configured_max_steps, lower=48, upper=60)
     return StrategyPolicy(
         difficulty=normalized,

@@ -256,3 +256,45 @@ def test_extreme_policy_reserves_larger_budget(tmp_path: Path) -> None:
     assert policy.mode == "extreme_task_graph_ready"
     assert policy.max_steps == 48
     assert policy.use_decomposer is True
+
+
+def test_extreme_pure_doc_threshold_uses_structured_react(tmp_path: Path) -> None:
+    context_dir = tmp_path / "context"
+    context_dir.mkdir()
+    doc_dir = context_dir / "doc"
+    doc_dir.mkdir()
+    (doc_dir / "Laboratory.md").write_text(
+        "Patient 1001 has creatinine level 2.1 and is marked abnormal.\n"
+        "Patient 1002 has creatinine level 0.8 and is marked normal.\n",
+        encoding="utf-8",
+    )
+    (doc_dir / "Patient.md").write_text(
+        "Patient 1001 birth year 1960.\nPatient 1002 birth year 1990.\n",
+        encoding="utf-8",
+    )
+    route = decide_route(
+        question="Among the patients whose creatinine level is abnormal, how many of them aren't 70 yet?",
+        context_dir=context_dir,
+        difficulty="extreme",
+    )
+
+    policy = build_strategy_policy(
+        difficulty="extreme",
+        route_decision=route,
+        configured_max_steps=36,
+        configured_use_multi_agent=True,
+        configured_enable_guided_retry=True,
+    )
+
+    assert "pure_doc_no_structured_source" in route.risk_flags
+    assert route.task_profile.task_type == "threshold_count"
+    assert policy.mode == "extreme_pure_doc_threshold_react"
+    assert policy.max_steps == 32
+    assert policy.use_multi_agent is False
+    assert policy.use_decomposer is False
+    assert policy.required_first_tools == [
+        "profile_context",
+        "extract_doc_records",
+        "ground_thresholds",
+        "execute_python",
+    ]
