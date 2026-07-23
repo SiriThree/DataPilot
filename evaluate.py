@@ -188,8 +188,10 @@ def evaluate_all(
     predictions_dir: Path,
     *,
     only_existing: bool = False,
+    exclude_task_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate all tasks in the dataset."""
+    excluded = {task_id.strip() for task_id in (exclude_task_ids or set()) if task_id.strip()}
     task_ids = sorted(
         [d.name for d in input_dir.iterdir() if d.is_dir() and d.name.startswith("task_")]
     )
@@ -199,8 +201,13 @@ def evaluate_all(
     by_difficulty: dict[str, list[float]] = {}
     failures: list[dict[str, Any]] = []
     skipped_missing_predictions: list[str] = []
+    excluded_task_ids: list[str] = []
 
     for task_id in task_ids:
+        if task_id in excluded:
+            excluded_task_ids.append(task_id)
+            continue
+
         task_json_path = input_dir / task_id / "task.json"
         gold_path = output_dir / task_id / "gold.csv"
         pred_path = predictions_dir / task_id / "prediction.csv"
@@ -232,6 +239,7 @@ def evaluate_all(
     overall = {
         "total_tasks": len(results),
         "skipped_missing_predictions": len(skipped_missing_predictions),
+        "excluded_tasks": len(excluded_task_ids),
         "overall_score": round(total_score / len(results), 4) if results else 0.0,
         "by_difficulty": {
             diff: {
@@ -247,6 +255,7 @@ def evaluate_all(
         "tasks": results,
         "summary": overall,
         "skipped_missing_prediction_task_ids": skipped_missing_predictions,
+        "excluded_task_ids": excluded_task_ids,
     }
 
 
@@ -267,6 +276,12 @@ def main() -> None:
         action="store_true",
         help="Only evaluate tasks that already have prediction.csv in the run output directory.",
     )
+    batch.add_argument(
+        "--exclude-task",
+        action="append",
+        default=[],
+        help="Exclude a task id from batch evaluation. Can be passed multiple times.",
+    )
 
     args = parser.parse_args()
 
@@ -279,6 +294,7 @@ def main() -> None:
             Path(args.output_dir),
             Path(args.predictions_dir),
             only_existing=args.only_existing,
+            exclude_task_ids=set(args.exclude_task),
         )
         print(json.dumps(result["summary"], indent=2))
         # Also write to file

@@ -61,3 +61,25 @@ def test_evaluate_all_counts_missing_predictions_without_only_existing(tmp_path:
     assert result["summary"]["skipped_missing_predictions"] == 0
     assert result["summary"]["overall_score"] == 0.0
     assert len(result["summary"]["failures"]) == 2
+
+
+def test_evaluate_all_excludes_task_ids(tmp_path: Path) -> None:
+    _write_task(tmp_path, "task_1")
+    _write_task(tmp_path, "task_2")
+
+    predictions_dir = tmp_path / "predictions"
+    pred_task_dir = predictions_dir / "task_1"
+    pred_task_dir.mkdir(parents=True)
+    (pred_task_dir / "prediction.csv").write_text("answer\n42\n", encoding="utf-8")
+
+    result = evaluate_all(
+        tmp_path / "input",
+        tmp_path / "output",
+        predictions_dir,
+        exclude_task_ids={"task_2"},
+    )
+
+    assert result["summary"]["total_tasks"] == 1
+    assert result["summary"]["excluded_tasks"] == 1
+    assert result["summary"]["overall_score"] == 1.0
+    assert result["excluded_task_ids"] == ["task_2"]
