@@ -1,7 +1,10 @@
-"""Deterministic repair planner and executor for prediction.csv.
+"""Gold-free deterministic repair planner and executor for prediction.csv.
+
+Runtime repair only sees the task input, prediction, trace, and verification
+signals. It must not read gold answers or call the offline evaluator.
 
 Reads failed verification checks and generates prioritized repair actions.
-All actions are deterministic rules — no LLM calls during repair.
+All actions are deterministic rules; no LLM calls are made during repair.
 
 Adapted from soonhp/KddCupDataAgents repair_planner.py + repair_executor.py.
 """

@@ -137,6 +137,14 @@ extreme  -> extreme_task_graph_ready
 
 注意：Hard/Extreme 的真正子任务 DAG 调度仍是后续工作；当前阶段先统一策略、预算、trace 记录和执行器开关。
 
+## Gold-free 验证与纠错
+
+DataPilot 的运行时验证和纠错不读取 `gold.csv`，也不调用 `evaluate.py`。`run-task` / `run-benchmark` 只允许使用任务输入、上下文、`prediction.csv`、工具执行结果和 `trace.json` 来判断格式、形状、执行状态、语义风险和证据一致性。
+
+`evaluate.py` 和 `dabench mine-failures` 属于离线评测/开发分析层，可以在任务结束后读取 `data/public/output/` 中的 gold answer，用来计算分数、定位失败模式和指导后续通用 verifier / solver 设计。这个边界由 `tests/test_gold_free_runtime_boundary.py` 回归测试保护。
+
+更完整的边界说明见 `docs/GOLD_FREE_VALIDATION.md`。
+
 ## 安装
 
 安装 `uv`：
